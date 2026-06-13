@@ -84,13 +84,57 @@
       transition: transform .12s, box-shadow .12s;
     }
     .btn:hover { transform: translateY(-2px); }
-    .spinner {
-      width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.2);
-      border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
     #err { color: var(--danger); font-size: 15px; max-width: 460px; line-height: 1.7; }
     .hint { font-size: 13px; opacity: .55; letter-spacing: .04em; }
+
+    /* ローディング画面 */
+    #loading { position: absolute; inset: 0; overflow: hidden; background: #05070f; display: none; z-index: 50; }
+    #loading.show { display: block; }
+    #loading .bg {
+      position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+      transform: scale(1.05); animation: ldZoom 9s ease-in-out infinite alternate;
+    }
+    @keyframes ldZoom { to { transform: scale(1.13); } }
+    #loading .vignette {
+      position: absolute; inset: 0;
+      background: radial-gradient(125% 85% at 50% 38%, transparent 42%, rgba(0,0,0,.6) 100%);
+    }
+    #loading .sweep {
+      position: absolute; top: -10%; bottom: -10%; left: -50%; width: 45%;
+      background: linear-gradient(100deg, transparent, rgba(255,255,255,.16), transparent);
+      filter: blur(8px); transform: skewX(-12deg); animation: ldSweep 2.6s ease-in-out infinite;
+    }
+    @keyframes ldSweep { 0% { left: -50%; } 65%, 100% { left: 115%; } }
+    #loading .foot {
+      position: absolute; left: 50%; bottom: 8%; transform: translateX(-50%);
+      width: min(560px, 82%); text-align: center;
+    }
+    #loading .status {
+      font-size: 15px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase;
+      color: #eaf6ff; text-shadow: 0 2px 12px rgba(0,0,0,.85); margin-bottom: 13px;
+    }
+    #loading .dots::after { content: "···"; animation: ldDots 1.2s steps(4, end) infinite; }
+    @keyframes ldDots { 0% { content: ""; } 25% { content: "·"; } 50% { content: "··"; } 75% { content: "···"; } }
+    #loading .bar {
+      position: relative; height: 11px; border-radius: 999px; background: rgba(255,255,255,.13);
+      overflow: hidden; box-shadow: inset 0 1px 3px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08);
+    }
+    #loading .fill {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 0%; border-radius: 999px;
+      background: linear-gradient(90deg, #ff3b54, #ff9d4d 45%, #38c8ff);
+      box-shadow: 0 0 18px rgba(86,200,255,.75), 0 0 10px rgba(255,80,95,.7);
+      transition: width .5s cubic-bezier(.2,.8,.2,1);
+    }
+    #loading .fill::after {
+      content: ""; position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent);
+      animation: ldShine 1.1s linear infinite;
+    }
+    @keyframes ldShine { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+    #loading .pct {
+      margin-top: 11px; font-size: 13px; font-weight: 800; letter-spacing: .1em;
+      color: #cfe6ff; font-variant-numeric: tabular-nums; text-shadow: 0 2px 10px rgba(0,0,0,.85);
+    }
   </style>
 </head>
 <body>
@@ -113,16 +157,37 @@
       <h1>HAND&nbsp;KART&nbsp;3D</h1>
       <p><strong>両手でハンドルを握って回す</strong>とカートが曲がる。<br>
          ライバル4台と<strong>3ラップ</strong>レース！🏁 ゴールを目指せ。<br>
-         ✊ <strong>グー（握りこぶし）</strong>か <strong>スペースキー</strong>で🚀ミサイル発射、前のライバルを攻撃。<br>
+         ✊ <strong>グー（握りこぶし）</strong>か <strong>スペースキー</strong>でミサイル発射、前のライバルを攻撃。<br>
          🚀ボックスで補充、🪙コイン回収、🚧コーンでスピン。アクセルは自動。</p>
       <button class="btn" id="startBtn">スタート</button>
       <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください</div>
       <div id="err"></div>
     </div>
+
+    <div id="loading">
+      <img class="bg" src="loading-racing.png" alt="NOW LOADING" />
+      <div class="vignette"></div>
+      <div class="sweep"></div>
+      <div class="foot">
+        <div class="status"><span id="loadStatusText">起動中</span><span class="dots"></span></div>
+        <div class="bar"><div class="fill" id="loadFill"></div></div>
+        <div class="pct" id="loadPct">0%</div>
+      </div>
+    </div>
   </div>
 
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
   <script type="module">
-    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+    import * as THREE from "three";
+    import { Sky } from "three/addons/objects/Sky.js";
+    import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
     import {
       HandLandmarker,
       FilesetResolver,
@@ -137,6 +202,10 @@
     const ammoEl = document.getElementById("ammo");
     const toastEl = document.getElementById("toast");
     const flashEl = document.getElementById("flash");
+    const loadingEl = document.getElementById("loading");
+    const loadStatusText = document.getElementById("loadStatusText");
+    const loadFill = document.getElementById("loadFill");
+    const loadPct = document.getElementById("loadPct");
     const pip = document.getElementById("pip");
     const pctx = pip.getContext("2d");
     const wheelCv = document.getElementById("wheel");
@@ -146,34 +215,36 @@
     const RACE_LAPS = 3;
     const NUM_RIVALS = 4;
     const TOTAL_RACERS = NUM_RIVALS + 1;
-    const ROAD_W = 24;            // 道路の半幅（広めのゆったりコース）
-    const MAX_SPEED = 95;         // ワールド単位/秒
+    const ROAD_W = 24;
+    const MAX_SPEED = 95;
     const ACCEL = 45;
-    const MAX_WHEEL_ANGLE = 0.6;  // この手の傾きで最大舵角
-    const STEER_RATE = 32;        // 舵による横移動量/秒
-    const CAM_BACK = 22, CAM_UP = 11, CAM_LOOK = 14; // 追従カメラ
-    const KART_LIFT = 1.2;
+    const MAX_WHEEL_ANGLE = 0.6;
+    const STEER_RATE = 32;
+    const CAM_BACK = 22, CAM_UP = 11, CAM_LOOK = 14;
+    const KART_LIFT = 0.2;
 
     // ---- ミサイル ----
     const START_AMMO = 3, MAX_AMMO = 5;
     const MISSILE_SPEED = MAX_SPEED * 2.3;
-    const FIRE_CD = 0.6;          // 連射クールダウン
+    const FIRE_CD = 0.6;
 
     const RIVAL_COLORS = [
-      { body: 0x3fb24f, driver: 0x123f1a, cap: 0x2c9a3c },
-      { body: 0x9b59ff, driver: 0x331b63, cap: 0x8a46f0 },
-      { body: 0xffb02e, driver: 0x6e4400, cap: 0xe89a16 },
-      { body: 0x18c4d6, driver: 0x08454f, cap: 0x12aabc },
+      { body: 0x2f9c43, driver: 0x123f1a, cap: 0x2c9a3c },
+      { body: 0x7b3ff0, driver: 0x331b63, cap: 0x8a46f0 },
+      { body: 0xe39316, driver: 0x6e4400, cap: 0xe89a16 },
+      { body: 0x1196b0, driver: 0x08454f, cap: 0x12aabc },
     ];
 
     // ---- Three.js ----
     let renderer, scene, camera, kart, sun;
     let trackCurve = null, trackLen = 0;
-    const items = [];     // { type, t, lateral, mesh, alive }
-    let rivals = [];      // { mesh, dist, lateral, laneBase, speed, baseSpeed, phase, spinTimer, spinYaw, finished, finishRank }
-    let missiles = [];    // { mesh, dist, lateral, target, life, dead }
-    let effects = [];     // { mesh, age, life, dead }
+    const sunDir = new THREE.Vector3();
+    const items = [];
+    let rivals = [];
+    let missiles = [];
+    let effects = [];
     const UP = new THREE.Vector3(0, 1, 0);
+    const SPHERE = new THREE.SphereGeometry(1, 12, 10);
 
     // ---- 手検出 ----
     let handLandmarker = null;
@@ -217,24 +288,25 @@
       const c = document.createElement("canvas");
       c.width = 128; c.height = 128;
       const g = c.getContext("2d");
-      g.fillStyle = "#3a3f47"; g.fillRect(0, 0, 128, 128);
-      for (let i = 0; i < 400; i++) {
-        g.fillStyle = `rgba(255,255,255,${Math.random() * 0.05})`;
+      g.fillStyle = "#41454c"; g.fillRect(0, 0, 128, 128);
+      for (let i = 0; i < 1200; i++) {
+        const v = Math.random();
+        g.fillStyle = `rgba(${v > .5 ? 255 : 0},${v > .5 ? 255 : 0},${v > .5 ? 255 : 0},${Math.random() * 0.06})`;
         g.fillRect(Math.random() * 128, Math.random() * 128, 2, 2);
       }
       for (let y = 0; y < 128; y += 16) {
-        g.fillStyle = (y / 16) % 2 ? "#e7e7e7" : "#d6374a";
-        g.fillRect(0, y, 12, 16); g.fillRect(116, y, 12, 16);
+        g.fillStyle = (y / 16) % 2 ? "#e7e7e7" : "#c92f3f";
+        g.fillRect(0, y, 11, 16); g.fillRect(117, y, 11, 16);
       }
-      g.fillStyle = "#ffd54a";
-      for (let y = 0; y < 128; y += 40) g.fillRect(60, y, 8, 22);
+      g.fillStyle = "#e9c441";
+      for (let y = 0; y < 128; y += 40) g.fillRect(61, y, 7, 22);
       const tex = new THREE.CanvasTexture(c);
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-      tex.anisotropy = 4;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
       return tex;
     }
 
-    // ---- チェッカー（ゴールゲート）テクスチャ ----
     function makeCheckerTexture(repeat) {
       const c = document.createElement("canvas");
       c.width = c.height = 64;
@@ -247,11 +319,27 @@
         }
       const t = new THREE.CanvasTexture(c);
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.colorSpace = THREE.SRGBColorSpace;
       t.repeat.set(repeat, 1);
       return t;
     }
 
-    // ---- コース生成（閉ループ・カーブ＋高低差）----
+    // ---- 共有マテリアル ----
+    let MAT = null;
+    function mats() {
+      if (MAT) return MAT;
+      MAT = {
+        tire: new THREE.MeshStandardMaterial({ color: 0x14151a, roughness: 0.85, metalness: 0.0 }),
+        rim: new THREE.MeshStandardMaterial({ color: 0xc7ccd4, roughness: 0.25, metalness: 0.95 }),
+        metal: new THREE.MeshStandardMaterial({ color: 0x2b2e34, roughness: 0.45, metalness: 0.85 }),
+        steel: new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.32, metalness: 0.92 }),
+        visor: new THREE.MeshStandardMaterial({ color: 0x0c0f14, roughness: 0.08, metalness: 0.5 }),
+        warhead: new THREE.MeshStandardMaterial({ color: 0xb23b2e, roughness: 0.4, metalness: 0.5 }),
+      };
+      return MAT;
+    }
+
+    // ---- コース生成 ----
     function buildTrack() {
       for (const it of items) scene.remove(it.mesh);
       items.length = 0;
@@ -283,7 +371,7 @@
         roadPos.push(L.x, L.y, L.z, R.x, R.y, R.z);
         const v = t * STEPS * 0.12;
         roadUv.push(0, v, 1, v);
-        const gy = p.y - 0.3;
+        const gy = p.y - 0.6;
         const FL = p.clone().addScaledVector(side, -GRASS_W); FL.y = gy;
         const FR = p.clone().addScaledVector(side, GRASS_W); FR.y = gy;
         grassPos.push(FL.x, FL.y, FL.z, FR.x, FR.y, FR.z);
@@ -302,7 +390,9 @@
       roadGeo.setAttribute("uv", new THREE.Float32BufferAttribute(roadUv, 2));
       roadGeo.setIndex(roadIdx);
       roadGeo.computeVertexNormals();
-      const road = new THREE.Mesh(roadGeo, new THREE.MeshLambertMaterial({ map: makeRoadTexture() }));
+      const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({
+        map: makeRoadTexture(), roughness: 0.95, metalness: 0.0,
+      }));
       road.name = "road"; road.receiveShadow = true;
       scene.add(road);
 
@@ -310,14 +400,14 @@
       grassGeo.setAttribute("position", new THREE.Float32BufferAttribute(grassPos, 3));
       grassGeo.setIndex(grassIdx);
       grassGeo.computeVertexNormals();
-      const grass = new THREE.Mesh(grassGeo, new THREE.MeshLambertMaterial({ color: 0x47a85a }));
+      const grass = new THREE.Mesh(grassGeo, new THREE.MeshStandardMaterial({ color: 0x5c7a3e, roughness: 1.0 }));
       grass.name = "grass"; grass.receiveShadow = true;
       scene.add(grass);
 
       if (scene.getObjectByName("ground")) scene.remove(scene.getObjectByName("ground"));
       const ground = new THREE.Mesh(
         new THREE.PlaneGeometry(5000, 5000),
-        new THREE.MeshLambertMaterial({ color: 0x2f8542 })
+        new THREE.MeshStandardMaterial({ color: 0x4c6234, roughness: 1.0 })
       );
       ground.rotation.x = -Math.PI / 2;
       ground.position.y = minY - 6;
@@ -328,7 +418,6 @@
       placeItems();
     }
 
-    // ---- スタート／ゴールのゲート ----
     function buildFinishGate() {
       if (scene.getObjectByName("finish")) scene.remove(scene.getObjectByName("finish"));
       const g = new THREE.Group(); g.name = "finish";
@@ -337,7 +426,7 @@
       const side = new THREE.Vector3().crossVectors(tan, UP).normalize();
       const yaw = Math.atan2(tan.x, tan.z);
 
-      const postMat = new THREE.MeshLambertMaterial({ color: 0xf2f2f2 });
+      const postMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.6, metalness: 0.2 });
       const postGeo = new THREE.BoxGeometry(2.4, 18, 2.4);
       for (const s of [-1, 1]) {
         const post = new THREE.Mesh(postGeo, postMat);
@@ -362,17 +451,18 @@
       return p.addScaledVector(side, lat).add(new THREE.Vector3(0, lift, 0));
     }
 
-    let coinGeo, coinMat, coneGeo, coneMat, ammoGeo, ammoMat;
+    let coinGeo, coinMat, coneGeo, coneMat, coneBand, ammoGeo, ammoMat;
     function placeItems() {
       coinGeo = coinGeo || new THREE.CylinderGeometry(1.5, 1.5, 0.35, 22);
       coinMat = coinMat || new THREE.MeshStandardMaterial({
-        color: 0xffd23f, metalness: 0.8, roughness: 0.25, emissive: 0x5a3d00,
+        color: 0xffd23f, metalness: 0.9, roughness: 0.2, emissive: 0x3a2600,
       });
-      coneGeo = coneGeo || new THREE.ConeGeometry(2.2, 4.5, 18);
-      coneMat = coneMat || new THREE.MeshLambertMaterial({ color: 0xff7a1a });
+      coneGeo = coneGeo || new THREE.ConeGeometry(2.2, 4.5, 20);
+      coneMat = coneMat || new THREE.MeshStandardMaterial({ color: 0xff6a16, roughness: 0.5, metalness: 0.0 });
+      coneBand = coneBand || new THREE.CylinderGeometry(1.45, 1.7, 0.7, 20);
       ammoGeo = ammoGeo || new THREE.BoxGeometry(2.8, 2.8, 2.8);
       ammoMat = ammoMat || new THREE.MeshStandardMaterial({
-        color: 0x18d6c4, emissive: 0x0a5b53, metalness: 0.3, roughness: 0.4,
+        color: 0x18d6c4, emissive: 0x0a5b53, metalness: 0.4, roughness: 0.35,
       });
 
       for (let i = 0; i < 80; i++) {
@@ -390,11 +480,13 @@
       for (let i = 0; i < 24; i++) {
         const t = 0.06 + Math.random() * 0.9;
         const lat = (Math.random() * 2 - 1) * (ROAD_W - 3);
-        const m = new THREE.Mesh(coneGeo, coneMat);
-        m.position.copy(itemPosition(t, lat, 2.25));
-        m.castShadow = true;
-        scene.add(m);
-        items.push({ type: "obstacle", t, lateral: lat, mesh: m, alive: true });
+        const g = new THREE.Group();
+        const body = new THREE.Mesh(coneGeo, coneMat); body.castShadow = true; g.add(body);
+        const band = new THREE.Mesh(coneBand, new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.6 }));
+        band.position.y = 0.6; g.add(band);
+        g.position.copy(itemPosition(t, lat, 2.25));
+        scene.add(g);
+        items.push({ type: "obstacle", t, lateral: lat, mesh: g, alive: true });
       }
       for (let i = 0; i < 16; i++) {
         const t = 0.05 + Math.random() * 0.92;
@@ -407,83 +499,114 @@
       }
     }
 
-    // ---- カート（色を指定してライバルも生成）----
+    // ---- リアルなカート ----
+    function buildWheel(radius, width) {
+      const m = mats();
+      const g = new THREE.Group();
+      const tire = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, width, 24), m.tire);
+      tire.rotation.z = Math.PI / 2; tire.castShadow = true; g.add(tire);
+      const rim = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.5, radius * 0.5, width + 0.08, 16), m.rim);
+      rim.rotation.z = Math.PI / 2; g.add(rim);
+      return g;
+    }
+
     function buildKart(opts = {}) {
-      const bodyC = opts.body ?? 0xe23b3b;
-      const driverC = opts.driver ?? 0x2f6df0;
-      const capC = opts.cap ?? bodyC;
-      const g = new THREE.Group();
-      const body = new THREE.MeshLambertMaterial({ color: bodyC });
-      const dark = new THREE.MeshLambertMaterial({ color: 0x222229 });
-      const skin = new THREE.MeshLambertMaterial({ color: 0xf2c79b });
-      const driver = new THREE.MeshLambertMaterial({ color: driverC });
-      const capM = new THREE.MeshLambertMaterial({ color: capC });
+      const m = mats();
+      const bodyC = opts.body ?? 0xc62a2a;
+      const bodyMat = new THREE.MeshStandardMaterial({ color: bodyC, roughness: 0.3, metalness: 0.5 });
+      const suitMat = new THREE.MeshStandardMaterial({ color: opts.driver ?? 0x2350c8, roughness: 0.6, metalness: 0.1 });
+      const helmMat = new THREE.MeshStandardMaterial({ color: opts.cap ?? bodyC, roughness: 0.16, metalness: 0.3 });
+      const g = new THREE.Group(); g.rotation.order = "YXZ";
 
-      const chassis = new THREE.Mesh(new THREE.BoxGeometry(4.4, 1.3, 6.2), body);
-      chassis.position.y = 1.5; chassis.castShadow = true; g.add(chassis);
-      const nose = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.9, 1.6), body);
-      nose.position.set(0, 1.2, 3.4); nose.castShadow = true; g.add(nose);
+      const floor = new THREE.Mesh(new RoundedBoxGeometry(4.0, 0.4, 7.4, 2, 0.18), m.metal);
+      floor.position.y = 1.0; floor.castShadow = true; g.add(floor);
 
-      const wheelGeo = new THREE.CylinderGeometry(1.15, 1.15, 1, 16);
-      for (const [x, z] of [[-2.2, 2.2], [2.2, 2.2], [-2.2, -2.2], [2.2, -2.2]]) {
-        const w = new THREE.Mesh(wheelGeo, dark);
-        w.rotation.z = Math.PI / 2;
-        w.position.set(x, 0.9, z); w.castShadow = true; g.add(w);
+      const tub = new THREE.Mesh(new RoundedBoxGeometry(2.8, 1.0, 4.4, 3, 0.3), bodyMat);
+      tub.position.set(0, 1.55, -0.2); tub.castShadow = true; g.add(tub);
+
+      const nose = new THREE.Mesh(new RoundedBoxGeometry(2.2, 0.7, 2.6, 2, 0.25), bodyMat);
+      nose.position.set(0, 1.3, 3.1); nose.castShadow = true; g.add(nose);
+
+      const split = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.16, 1.0), m.metal);
+      split.position.set(0, 0.95, 4.1); g.add(split);
+
+      for (const s of [-1, 1]) {
+        const pod = new THREE.Mesh(new RoundedBoxGeometry(0.9, 0.8, 3.4, 2, 0.25), bodyMat);
+        pod.position.set(s * 1.95, 1.25, -0.3); pod.castShadow = true; g.add(pod);
       }
-      const torso = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.6, 2.2), driver);
-      torso.position.set(0, 2.7, -0.4); torso.castShadow = true; g.add(torso);
-      const head = new THREE.Mesh(new THREE.SphereGeometry(1.05, 18, 14), skin);
-      head.position.set(0, 4.0, -0.2); head.castShadow = true; g.add(head);
-      const cap = new THREE.Mesh(new THREE.SphereGeometry(1.12, 18, 14, 0, Math.PI * 2, 0, Math.PI / 2), capM);
-      cap.position.set(0, 4.05, -0.2); cap.castShadow = true; g.add(cap);
 
-      g.rotation.order = "YXZ";
+      const eng = new THREE.Mesh(new RoundedBoxGeometry(2.2, 1.1, 1.6, 2, 0.2), m.metal);
+      eng.position.set(0, 1.7, -2.6); eng.castShadow = true; g.add(eng);
+
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.16, 1.1), bodyMat);
+      wing.position.set(0, 2.9, -3.5); wing.castShadow = true; g.add(wing);
+      for (const s of [-1, 1]) {
+        const sup = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.1, 0.3), m.metal);
+        sup.position.set(s * 1.0, 2.35, -3.4); g.add(sup);
+      }
+
+      const torso = new THREE.Mesh(new RoundedBoxGeometry(1.7, 1.5, 1.5, 2, 0.3), suitMat);
+      torso.position.set(0, 2.2, -0.5); torso.castShadow = true; g.add(torso);
+      const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.88, 20, 16), helmMat);
+      helmet.position.set(0, 3.25, -0.3); helmet.castShadow = true; g.add(helmet);
+      const visor = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.4, 0.4), m.visor);
+      visor.position.set(0, 3.3, 0.34); g.add(visor);
+
+      const wheelDefs = [
+        [-2.45, 1.1, 2.7, 1.1, 0.95], [2.45, 1.1, 2.7, 1.1, 0.95],
+        [-2.6, 1.35, -2.4, 1.35, 1.25], [2.6, 1.35, -2.4, 1.35, 1.25],
+      ];
+      for (const [x, y, z, r, w] of wheelDefs) {
+        const wheel = buildWheel(r, w);
+        wheel.position.set(x, y, z); g.add(wheel);
+      }
       return g;
     }
 
+    // ---- リアルなミサイル ----
     function buildMissile() {
-      const g = new THREE.Group();
-      const body = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.5, 0.5, 3, 12),
-        new THREE.MeshStandardMaterial({ color: 0x33383f, metalness: 0.7, roughness: 0.35, emissive: 0x200000 })
+      const m = mats();
+      const g = new THREE.Group(); g.rotation.order = "YXZ";
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 3.0, 16), m.steel);
+      body.rotation.x = Math.PI / 2; body.castShadow = true; g.add(body);
+      const nose = new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.3, 16), m.warhead);
+      nose.rotation.x = Math.PI / 2; nose.position.z = 2.15; g.add(nose);
+      for (let i = 0; i < 4; i++) {
+        const fin = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0, 0.9), m.metal);
+        const a = i * Math.PI / 2;
+        fin.position.set(Math.cos(a) * 0.5, Math.sin(a) * 0.5, -1.25);
+        fin.rotation.z = a; g.add(fin);
+      }
+      const flame = new THREE.Mesh(
+        new THREE.ConeGeometry(0.42, 1.7, 12),
+        new THREE.MeshBasicMaterial({ color: 0xffb030, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })
       );
-      body.rotation.x = Math.PI / 2; g.add(body);
-      const nose = new THREE.Mesh(
-        new THREE.ConeGeometry(0.5, 1.3, 12),
-        new THREE.MeshStandardMaterial({ color: 0xff3b3b, emissive: 0x661010 })
-      );
-      nose.rotation.x = Math.PI / 2; nose.position.z = 2.1; g.add(nose);
-      g.rotation.order = "YXZ";
+      flame.rotation.x = -Math.PI / 2; flame.position.z = -2.25; g.add(flame);
+      g.userData.flame = flame;
       return g;
     }
 
-    // ---- ライバル生成 ----
+    // ---- ライバル ----
+    const RIVAL_LANES = [-13, 13, -7, 7];
     function spawnRivals() {
       for (const r of rivals) scene.remove(r.mesh);
       rivals = [];
-      const lanes = [-13, 13, -7, 7];
       for (let i = 0; i < NUM_RIVALS; i++) {
         const mesh = buildKart(RIVAL_COLORS[i % RIVAL_COLORS.length]);
         scene.add(mesh);
-        const lane = lanes[i % lanes.length];
+        const lane = RIVAL_LANES[i % RIVAL_LANES.length];
         rivals.push({
-          mesh,
-          dist: (i + 1) * 8,               // 少し前方からスタート（追い抜き＆ミサイルの的に）
-          lateral: lane, laneBase: lane,
-          speed: MAX_SPEED * 0.8,
-          baseSpeed: MAX_SPEED * (0.9 + Math.random() * 0.08),
-          phase: Math.random() * Math.PI * 2,
-          spinTimer: 0, spinYaw: 0,
+          mesh, dist: (i + 1) * 8, lateral: lane, laneBase: lane,
+          speed: MAX_SPEED * 0.8, baseSpeed: MAX_SPEED * (0.9 + Math.random() * 0.08),
+          phase: Math.random() * Math.PI * 2, spinTimer: 0, spinYaw: 0,
           finished: false, finishRank: 0,
         });
       }
     }
-
     function resetRivals() {
-      const lanes = [-13, 13, -7, 7];
       rivals.forEach((r, i) => {
         r.dist = (i + 1) * 8;
-        r.laneBase = lanes[i % lanes.length];
+        r.laneBase = RIVAL_LANES[i % RIVAL_LANES.length];
         r.lateral = r.laneBase;
         r.speed = MAX_SPEED * 0.8;
         r.spinTimer = 0; r.spinYaw = 0;
@@ -492,7 +615,7 @@
       });
     }
 
-    // ---- 任意オブジェクトをトラック上に配置 ----
+    // ---- トラック上配置 ----
     const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
     function placeOnTrack(obj, dist, lat, yawExtra) {
       let t = (dist % trackLen) / trackLen;
@@ -506,6 +629,14 @@
       const pitch = -Math.asin(Math.max(-1, Math.min(1, _v2.y)));
       obj.rotation.set(pitch, yaw + (yawExtra || 0), 0);
     }
+    function trackWorldPos(dist, lat, lift) {
+      let t = (dist % trackLen) / trackLen;
+      if (t < 0) t += 1;
+      trackCurve.getPointAt(t, _v1);
+      trackCurve.getTangentAt(t, _v2).normalize();
+      _v3.crossVectors(_v2, UP).normalize();
+      return _v1.clone().addScaledVector(_v3, lat).add(new THREE.Vector3(0, lift, 0));
+    }
 
     // ---- シーン初期化 ----
     function initScene() {
@@ -515,21 +646,45 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 0.95;
 
       scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x8fc7ff);
-      scene.fog = new THREE.Fog(0x9fd0ff, 220, 620);
+      camera = new THREE.PerspectiveCamera(66, window.innerWidth / window.innerHeight, 0.5, 2000);
 
-      camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.5, 2000);
+      // 大気散乱の空（FarCry風のリアルな空）
+      const sky = new Sky();
+      sky.scale.setScalar(8000);
+      const u = sky.material.uniforms;
+      u.turbidity.value = 6;
+      u.rayleigh.value = 2.2;
+      u.mieCoefficient.value = 0.004;
+      u.mieDirectionalG.value = 0.85;
+      const elevation = 17, azimuth = 150;
+      const phi = THREE.MathUtils.degToRad(90 - elevation);
+      const theta = THREE.MathUtils.degToRad(azimuth);
+      sunDir.setFromSphericalCoords(1, phi, theta);
+      u.sunPosition.value.copy(sunDir);
 
-      scene.add(new THREE.HemisphereLight(0xddeeff, 0x3a5a30, 0.9));
-      sun = new THREE.DirectionalLight(0xfff2da, 1.1);
-      sun.position.set(120, 220, 80);
+      // 空を環境マップ化（金属に空が映り込む）
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      const envScene = new THREE.Scene(); envScene.add(sky);
+      scene.environment = pmrem.fromScene(envScene).texture;
+      scene.add(sky);
+      pmrem.dispose();
+
+      // 地平のヘイズ（空のhorizon色に寄せて継ぎ目を消す）
+      scene.fog = new THREE.Fog(0xc7d6df, 320, 1300);
+
+      scene.add(new THREE.HemisphereLight(0xbfd6ff, 0x55663f, 0.4));
+      sun = new THREE.DirectionalLight(0xfff1dd, 2.8);
       sun.castShadow = true;
-      sun.shadow.mapSize.set(1024, 1024);
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.bias = -0.0004;
       const sc = sun.shadow.camera;
-      sc.near = 10; sc.far = 600; sc.left = -120; sc.right = 120; sc.top = 120; sc.bottom = -120;
+      sc.near = 80; sc.far = 1400; sc.left = -130; sc.right = 130; sc.top = 130; sc.bottom = -130;
       scene.add(sun);
+      scene.add(sun.target);
 
       kart = buildKart();
       scene.add(kart);
@@ -558,18 +713,16 @@
       wheelCv.style.width = ws + "px"; wheelCv.style.height = ws + "px";
     }
 
-    // ---- 手検出（手のひら中心＝landmark 9、左右反転で鏡像に）----
+    // ---- 手検出 ----
     function isFist(lm) {
       const w = lm[0];
       const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
       let curled = 0;
-      // 人差し指/中指/薬指/小指：指先(tip)が付け根(mcp)より手首に近ければ曲がっている
       for (const [tip, mcp] of [[8, 5], [12, 9], [16, 13], [20, 17]]) {
         if (d(lm[tip], w) < d(lm[mcp], w) * 1.05) curled++;
       }
       return curled >= 3;
     }
-
     function detectHands(nowMs) {
       if (video.currentTime === lastVideoTime) return lastHands;
       lastVideoTime = video.currentTime;
@@ -585,7 +738,7 @@
       return out;
     }
 
-    // ---- ミサイル発射・更新 ----
+    // ---- ミサイル ----
     function nearestTargetAhead() {
       let best = null, bestGap = Infinity;
       for (const r of rivals) {
@@ -595,16 +748,14 @@
       }
       return best;
     }
-
     function fireMissile() {
       if (ammo <= 0 || fireCD > 0 || spinTimer > 0 || playerFinished) return;
       ammo--; fireCD = FIRE_CD; updateAmmo();
       const m = buildMissile();
       scene.add(m);
-      missiles.push({ mesh: m, dist: distanceTotal + 6, lateral, target: nearestTargetAhead(), life: 4, dead: false });
+      missiles.push({ mesh: m, dist: distanceTotal + 6, lateral, target: nearestTargetAhead(), life: 4, trailT: 0, dead: false });
       showToast("🚀 FIRE!");
     }
-
     function updateMissiles(dt) {
       for (const mo of missiles) {
         mo.life -= dt;
@@ -622,29 +773,48 @@
         }
         if (hit || mo.life <= 0) { scene.remove(mo.mesh); mo.dead = true; continue; }
         placeOnTrack(mo.mesh, mo.dist, mo.lateral, 0);
-        mo.mesh.position.y += 1.0;
+        mo.mesh.position.y += 1.6;
+        // 噴射炎の揺らぎ
+        const fl = mo.mesh.userData.flame;
+        if (fl) { fl.scale.set(1, 0.7 + Math.random() * 0.8, 1); fl.material.opacity = 0.7 + Math.random() * 0.3; }
+        // スモークの航跡
+        mo.trailT -= dt;
+        if (mo.trailT <= 0) {
+          mo.trailT = 0.025;
+          const tail = mo.mesh.localToWorld(new THREE.Vector3(0, 0, -2.6));
+          spawnSmoke(tail, 0.6, 0.45, 3, 0xb9b9b9, 0.5);
+        }
       }
       missiles = missiles.filter((m) => !m.dead);
     }
 
-    function spawnExplosion(dist, lat) {
-      const m = new THREE.Mesh(
-        new THREE.SphereGeometry(1.4, 16, 12),
-        new THREE.MeshBasicMaterial({ color: 0xffc24a, transparent: true, opacity: 0.95 })
-      );
-      placeOnTrack(m, dist, lat, 0);
-      m.position.y += 2;
+    function spawnSmoke(pos, scale, life, rise, color, op) {
+      const m = new THREE.Mesh(SPHERE, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: op, depthWrite: false }));
+      m.position.copy(pos); m.scale.setScalar(scale);
       scene.add(m);
-      effects.push({ mesh: m, age: 0, life: 0.5, dead: false });
-      flash(0.25);
+      effects.push({ mesh: m, age: 0, life, s0: scale, grow: scale * 2.2, rise, op0: op });
     }
-
+    function spawnExplosion(dist, lat) {
+      const pos = trackWorldPos(dist, lat, 2.2);
+      const core = new THREE.Mesh(SPHERE, new THREE.MeshBasicMaterial({
+        color: 0xffd66a, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+      core.position.copy(pos);
+      scene.add(core);
+      effects.push({ mesh: core, age: 0, life: 0.4, s0: 1.5, grow: 9, rise: 0, op0: 1 });
+      for (let i = 0; i < 7; i++) {
+        const off = new THREE.Vector3((Math.random() * 2 - 1) * 2, Math.random() * 2.4, (Math.random() * 2 - 1) * 2);
+        spawnSmoke(pos.clone().add(off), 1.2 + Math.random() * 1.6, 0.7 + Math.random() * 0.5, 7, 0x9a9a9a, 0.65);
+      }
+      flash(0.3);
+    }
     function updateEffects(dt) {
       for (const e of effects) {
         e.age += dt;
         const k = e.age / e.life;
-        e.mesh.scale.setScalar(1 + k * 6);
-        e.mesh.material.opacity = Math.max(0, 0.95 * (1 - k));
+        e.mesh.scale.setScalar(e.s0 + e.grow * k);
+        e.mesh.position.y += e.rise * dt;
+        e.mesh.material.opacity = Math.max(0, e.op0 * (1 - k));
         if (k >= 1) { scene.remove(e.mesh); e.dead = true; }
       }
       effects = effects.filter((e) => !e.dead);
@@ -655,18 +825,16 @@
       for (const r of rivals) {
         let target = r.baseSpeed;
         if (!r.finished) {
-          if (r.dist < distanceTotal - 10) target = r.baseSpeed * 1.10;       // 後ろなら追い上げ
-          else if (r.dist > distanceTotal + 10) target = r.baseSpeed * 0.95;  // 前すぎなら緩める
+          if (r.dist < distanceTotal - 10) target = r.baseSpeed * 1.10;
+          else if (r.dist > distanceTotal + 10) target = r.baseSpeed * 0.95;
         }
         if (r.spinTimer > 0) { r.spinTimer -= dt; r.spinYaw += dt * 14; target = 0; }
         else r.spinYaw = 0;
         r.speed += (target - r.speed) * Math.min(1, dt * 2.5);
         if (r.speed < 0) r.speed = 0;
         r.dist += r.speed * dt;
-
         const want = r.laneBase + Math.sin(r.dist * 0.02 + r.phase) * (ROAD_W * 0.35);
         r.lateral += (want - r.lateral) * Math.min(1, dt * 1.5);
-
         if (!r.finished && r.dist >= RACE_LAPS * trackLen) {
           r.finished = true; r.finishRank = ++finishCount;
         }
@@ -676,7 +844,7 @@
 
     // ---- 順位 ----
     function prog(finished, finishRank, dist) {
-      return finished ? 1e12 - finishRank : dist; // 大きいほど前。早く完走ほど前。
+      return finished ? 1e12 - finishRank : dist;
     }
     function liveRank() {
       const me = prog(playerFinished, playerRank, distanceTotal);
@@ -688,23 +856,46 @@
       return Math.min(RACE_LAPS, Math.floor(distanceTotal / trackLen) + 1);
     }
 
+    // ---- ローディング画面 ----
+    function showLoading(pct, status) {
+      loadingEl.classList.add("show");
+      if (status != null) loadStatusText.textContent = status;
+      loadFill.style.width = pct + "%";
+      loadPct.textContent = Math.round(pct) + "%";
+    }
+    function hideLoading() { loadingEl.classList.remove("show"); }
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // モデルDLは進捗を取れないので、待っている間バーをじわっと進める
+    async function loadModelWithProgress() {
+      let p = 45;
+      const id = setInterval(() => { p += (88 - p) * 0.08; showLoading(p, "AIモデルを読み込み中"); }, 200);
+      try { await loadModel(); } finally { clearInterval(id); }
+    }
+
     // ---- ゲーム制御 ----
     startBtn.addEventListener("click", async () => {
-      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
       try {
+        overlay.classList.add("hidden");
+        showLoading(8, "カメラを起動中");
         await startCamera();
-        if (!handLandmarker) await loadModel();
+        showLoading(40, "カメラを起動中");
+        if (!handLandmarker) await loadModelWithProgress();
+        showLoading(90, "コースを生成中");
         if (!renderer) initScene();
         sizePip();
         buildTrack();
         spawnRivals();
         resetGame();
-        overlay.classList.add("hidden");
+        showLoading(100, "スタート");
+        await wait(450);
+        hideLoading();
         state = "playing";
         lastTime = performance.now();
         requestAnimationFrame(loop);
       } catch (e) {
         console.error(e);
+        hideLoading();
         showError(e);
       }
     });
@@ -750,12 +941,11 @@
     function showToast(text) {
       toastEl.textContent = text;
       toastEl.classList.remove("show");
-      void toastEl.offsetWidth; // reflow でアニメ再生
+      void toastEl.offsetWidth;
       toastEl.classList.add("show");
       clearTimeout(toastT);
       toastT = setTimeout(() => toastEl.classList.remove("show"), 1000);
     }
-
     function fmtTime(s) {
       const m = Math.floor(s / 60), ss = (s % 60).toFixed(1).padStart(4, "0");
       return m + ":" + ss;
@@ -793,7 +983,6 @@
       lastTime = now; raceTime += dt;
       if (fireCD > 0) fireCD -= dt;
 
-      // 1) ステアリング（両手の傾き）
       const hands = detectHands(now);
       gripping = hands.length >= 2;
       if (gripping && spinTimer <= 0) {
@@ -806,23 +995,19 @@
         steering *= 1 - Math.min(1, dt * 3);
       }
 
-      // 2) ミサイル発射（グーの立ち上がりで）
       const anyFist = hands.some((h) => h.fist);
       if (anyFist && !prevFist) fireMissile();
       prevFist = anyFist;
 
-      // 3) 速度
       speed += ACCEL * dt;
       if (speed > MAX_SPEED) speed = MAX_SPEED;
       const offRoad = Math.abs(lateral) > ROAD_W;
       if (offRoad && speed > MAX_SPEED * 0.45) speed -= ACCEL * 2.2 * dt;
 
-      // 4) 前進
       distAlong = (distAlong + speed * dt) % trackLen;
       distanceTotal += speed * dt;
       const t = distAlong / trackLen;
 
-      // 5) 横移動（スピン中は操作不能）
       const sf = speed / MAX_SPEED;
       if (spinTimer > 0) {
         spinTimer -= dt; spinYaw += dt * 14;
@@ -832,7 +1017,6 @@
       }
       lateral = Math.max(-ROAD_W * 1.5, Math.min(ROAD_W * 1.5, lateral));
 
-      // 6) プレイヤーのカート配置
       trackCurve.getPointAt(t, _center);
       trackCurve.getTangentAt(t, _tan).normalize();
       _side.crossVectors(_tan, UP).normalize();
@@ -840,9 +1024,8 @@
       kart.position.y += KART_LIFT;
       const yaw = Math.atan2(_tan.x, _tan.z);
       const pitch = -Math.asin(Math.max(-1, Math.min(1, _tan.y)));
-      kart.rotation.set(pitch, yaw + spinYaw, -steering * 0.25);
+      kart.rotation.set(pitch, yaw + spinYaw, -steering * 0.22);
 
-      // 7) アイテム当たり判定
       for (const it of items) {
         if (it.alive) {
           let d = it.t - t; d -= Math.round(d);
@@ -862,19 +1045,16 @@
         }
       }
 
-      // 8) ライバル・ミサイル・エフェクト
       updateRivals(dt);
       updateMissiles(dt);
       updateEffects(dt);
 
-      // 9) プレイヤーのゴール判定
       if (!playerFinished && distanceTotal >= RACE_LAPS * trackLen) {
         playerFinished = true; playerRank = ++finishCount;
         finishRace();
         return;
       }
 
-      // 10) 追従カメラ
       _camPos.copy(_center).addScaledVector(_tan, -CAM_BACK).addScaledVector(_side, lateral * 0.4);
       _camPos.y += CAM_UP;
       camera.position.lerp(_camPos, 1 - Math.pow(0.0016, dt));
@@ -882,7 +1062,7 @@
       _look.y += 3.2;
       camera.lookAt(_look);
 
-      sun.position.set(_center.x + 120, _center.y + 220, _center.z + 80);
+      sun.position.copy(_center).addScaledVector(sunDir, 600);
       sun.target.position.copy(_center); sun.target.updateMatrixWorld();
 
       if (flashEl.style.opacity > 0) flash(Math.max(0, parseFloat(flashEl.style.opacity) - dt * 1.6));
@@ -935,7 +1115,7 @@
       }
       for (const p of pts) {
         pctx.beginPath(); pctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
-        pctx.fillStyle = p.fist ? "#ff4d6d" : "#ffd166"; pctx.fill(); // グー＝赤
+        pctx.fillStyle = p.fist ? "#ff4d6d" : "#ffd166"; pctx.fill();
       }
     }
   </script>
