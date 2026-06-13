@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Ohajiki Battle — 手で弾く対戦おはじき</title>
+  <style>
+    :root {
+      --bg: #0a0f1a;
+      --blue: #4da8ff;
+      --red: #ff5b6e;
+      --accent: #ffd93d;
+      --danger: #ff4d6d;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: radial-gradient(circle at 50% 0%, #14203a 0%, var(--bg) 70%);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden; -webkit-user-select: none; user-select: none;
+    }
+    #stage { position: relative; width: 100vw; height: 100vh; }
+    #cam { display: none; }
+    #game { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    #hud {
+      position: absolute; top: 0; left: 0; right: 0;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 18px 28px; pointer-events: none; font-variant-numeric: tabular-nums;
+    }
+    .pcount { font-size: 40px; font-weight: 900; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    .pcount small { font-size: 14px; font-weight: 700; opacity: .8; display: block; letter-spacing: .18em; }
+    #p1 { color: var(--blue); }
+    #p2 { color: var(--red); text-align: right; }
+    #timer {
+      position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+      font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums;
+      text-shadow: 0 2px 12px rgba(0,0,0,.6);
+    }
+    #timer.low { color: var(--danger); animation: pulse .5s ease-in-out infinite; }
+    @keyframes pulse { 50% { transform: translateX(-50%) scale(1.18); } }
+
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 22px; background: rgba(10,15,26,.84); backdrop-filter: blur(6px);
+      text-align: center; padding: 24px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      font-size: clamp(38px, 7.5vw, 80px); font-weight: 900; letter-spacing: .02em;
+      background: linear-gradient(120deg, var(--blue), var(--red));
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    #overlay p { font-size: 17px; line-height: 1.8; opacity: .9; max-width: 500px; }
+    #overlay .big { font-size: 60px; font-weight: 900; }
+    .btn {
+      pointer-events: auto; cursor: pointer; border: none; font: inherit;
+      font-weight: 800; font-size: 22px; color: #0a1020;
+      background: linear-gradient(120deg, var(--blue), var(--red));
+      padding: 16px 44px; border-radius: 999px; box-shadow: 0 8px 30px rgba(77,168,255,.35);
+      transition: transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 38px rgba(255,91,110,.45); }
+    .btn:active { transform: translateY(0); }
+    .spinner {
+      width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.2);
+      border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: var(--danger); font-size: 15px; max-width: 460px; line-height: 1.7; }
+    .hint { font-size: 13px; opacity: .55; letter-spacing: .04em; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="p1" class="pcount">6<small>BLUE 🔵</small></div>
+      <div id="timer">90</div>
+      <div id="p2" class="pcount">6<small>🔴 RED</small></div>
+    </div>
+
+    <div id="overlay">
+      <h1>おはじきバトル</h1>
+      <p><strong style="color:var(--blue)">左の人＝青</strong> ／ <strong style="color:var(--red)">右の人＝赤</strong>。<br>
+         自分の色のおはじきを <strong>👌 つまんで掴み → 振って離す</strong> と、手の勢いで弾き飛ばせる。<br>
+         玉をぶつけて <strong>相手のおはじきを盤の外へはじき出そう</strong>。<br>
+         全部落とすか、90秒で残りが多い方の勝ち。自分の玉を落とすと自滅！</p>
+      <button class="btn" id="startBtn">スタート</button>
+      <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください（2人で遊ぶなら両手を映す）</div>
+      <div id="err"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      HandLandmarker,
+      FilesetResolver,
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    const video = document.getElementById("cam");
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const p1El = document.getElementById("p1");
+    const p2El = document.getElementById("p2");
+    const timerEl = document.getElementById("timer");
+
+    // ---- 調整パラメータ ----
+    const GAME_TIME = 90;          // 制限時間（秒）
+    const MAX_HANDS = 2;           // 2人ぶんの手
+    const PIECES_PER_SIDE = 6;     // 各プレイヤーのおはじきの数
+    const PIECE_R = 28;            // おはじき半径
+    const GRAB_R = PIECE_R + 30;   // つまんで掴める範囲
+    const FRICTION_K = 1.2;        // 盤面の摩擦（大きいほどすぐ止まる）
+    const RESTITUTION = 0.92;      // 玉どうしの反発
+    const PINCH_ON = 0.45;         // つまむ判定（指先間/手のひら長）
+    const PINCH_OFF = 0.62;        // 離す判定（ヒステリシス）
+    const MAX_HAND_SPEED = 2300;   // 手の速度上限
+    const LAUNCH_GAIN = 1.05;      // 投げの強さ
+    const MAX_HOLD = 4;            // 掴みっぱなしの上限（秒）盤外シールド防止
+    const SIDE_COLORS = ["#4da8ff", "#ff5b6e"];
+
+    let handLandmarker = null;
+    let state = "idle";            // idle | playing | over
+    let pieces = [];
+    let particles = [];
+
+    // 盤面の内側（この内側＝盤上、外へ出たらアウト）
+    let L = 0, R = 0, T = 0, B = 0;
+
+    // 手検出
+    let prevPts = [];
+    let hands = [];
+    let lastVideoTime = -1, lastDetectT = 0;
+
+    // プレイヤー側の状態（0=青, 1=赤）
+    const sides = [makeSide(), makeSide()];
+    function makeSide() {
+      return { present: false, pinching: false, holding: null, holdTime: 0, gx: 0, gy: 0, aimVX: 0, aimVY: 0 };
+    }
+
+    let timeLeft = GAME_TIME, lastSec = -1, lastTime = 0;
+
+    // おはじきのスプライト（ガラス玉）
+    const SPR_R = 34;
+    const sprites = [makePieceSprite("#bfe0ff", "#2f7fe0", "#13407a"), makePieceSprite("#ffc4cb", "#e23a52", "#8c1428")];
+    function makePieceSprite(hi, mid, edge) {
+      const c = document.createElement("canvas");
+      c.width = c.height = SPR_R * 2 + 8;
+      const g = c.getContext("2d");
+      const cx = c.width / 2, cy = c.height / 2;
+      const grad = g.createRadialGradient(cx - SPR_R * 0.3, cy - SPR_R * 0.35, SPR_R * 0.15, cx, cy, SPR_R);
+      grad.addColorStop(0, hi); grad.addColorStop(0.55, mid); grad.addColorStop(1, edge);
+      g.fillStyle = grad;
+      g.beginPath(); g.arc(cx, cy, SPR_R, 0, Math.PI * 2); g.fill();
+      // ふちのリング
+      g.strokeStyle = "rgba(255,255,255,0.35)"; g.lineWidth = 2;
+      g.beginPath(); g.arc(cx, cy, SPR_R - 1.5, 0, Math.PI * 2); g.stroke();
+      // ガラスのハイライト
+      g.fillStyle = "rgba(255,255,255,0.7)";
+      g.beginPath(); g.ellipse(cx - SPR_R * 0.32, cy - SPR_R * 0.36, SPR_R * 0.26, SPR_R * 0.15, -0.5, 0, Math.PI * 2); g.fill();
+      g.fillStyle = "rgba(255,255,255,0.4)";
+      g.beginPath(); g.arc(cx + SPR_R * 0.28, cy + SPR_R * 0.28, SPR_R * 0.1, 0, Math.PI * 2); g.fill();
+      return c;
+    }
+
+    // ---- モデル / カメラ ----
+    async function loadModel() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: MAX_HANDS,
+      });
+    }
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+    }
+
+    startBtn.addEventListener("click", async () => {
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      try {
+        await startCamera();
+        if (!handLandmarker) await loadModel();
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        showError(e);
+      }
+    });
+
+    function showError(e) {
+      overlay.classList.remove("hidden");
+      const msg =
+        e?.name === "NotAllowedError"
+          ? "カメラの使用が許可されませんでした。ブラウザのカメラ設定から許可してください。"
+          : "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+      overlay.innerHTML =
+        '<h1>おはじきバトル</h1><div id="err"></div><button class="btn" id="retry">もう一度</button>';
+      overlay.querySelector("#err").textContent = msg;
+      overlay.querySelector("#retry").addEventListener("click", () => location.reload());
+    }
+
+    function computeBoard() {
+      L = canvas.width * 0.11; R = canvas.width * 0.89;
+      T = canvas.height * 0.15; B = canvas.height * 0.93;
+    }
+
+    function resetGame() {
+      computeBoard();
+      pieces = []; particles = [];
+      for (const s of sides) { s.pinching = false; s.holding = null; s.holdTime = 0; }
+      prevPts = []; hands = [];
+      timeLeft = GAME_TIME; lastSec = -1;
+      // 各プレイヤーのおはじきを陣地に整列（3行 × 2列）
+      const rows = 3, cols = 2, gap = PIECE_R * 2.5;
+      const cys = (canvas.height * 0.54);
+      for (let color = 0; color < 2; color++) {
+        const cx = color === 0 ? canvas.width * 0.24 : canvas.width * 0.76;
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            pieces.push({
+              x: cx + (c - (cols - 1) / 2) * gap,
+              y: cys + (r - (rows - 1) / 2) * gap,
+              vx: 0, vy: 0, color, held: false, out: false, outAge: 0,
+            });
+          }
+        }
+      }
+      updateHud();
+    }
+
+    function aliveCount(color) {
+      let n = 0;
+      for (const p of pieces) if (p.color === color && !p.out) n++;
+      return n;
+    }
+
+    function updateHud() {
+      p1El.innerHTML = aliveCount(0) + "<small>BLUE 🔵</small>";
+      p2El.innerHTML = aliveCount(1) + "<small>🔴 RED</small>";
+    }
+
+    function updateTimer() {
+      const s = Math.max(0, Math.ceil(timeLeft));
+      if (s !== lastSec) {
+        lastSec = s;
+        timerEl.textContent = s;
+        timerEl.classList.toggle("low", s <= 10);
+      }
+    }
+
+    function burst(x, y, color, n = 14) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 100 + Math.random() * 320;
+        particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: 0.5 + Math.random() * 0.4, age: 0, color, size: 3 + Math.random() * 7 });
+      }
+    }
+
+    function endGame() {
+      state = "over";
+      const b = aliveCount(0), r = aliveCount(1);
+      let title, col;
+      if (b > r) { title = "BLUE WIN! 🔵"; col = "var(--blue)"; }
+      else if (r > b) { title = "RED WIN! 🔴"; col = "var(--red)"; }
+      else { title = "DRAW"; col = "#fff"; }
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        '<h1 style="-webkit-text-fill-color:' + col + ';color:' + col + '">' + title + "</h1>" +
+        '<p>残ったおはじき</p><div class="big"><span style="color:var(--blue)">' + b +
+        '</span> &nbsp;-&nbsp; <span style="color:var(--red)">' + r + "</span></div>" +
+        '<button class="btn" id="again">もう一度</button>';
+      overlay.querySelector("#again").addEventListener("click", () => {
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      });
+    }
+
+    // ---- 手検出（つまみ点＝親指と人差し指の中点、速度はフレーム間差分）----
+    function detectHands(now) {
+      if (video.currentTime === lastVideoTime) return; // 新フレーム時のみ更新
+      lastVideoTime = video.currentTime;
+      const res = handLandmarker.detectForVideo(video, now);
+      const lms = res?.landmarks || [];
+      const dtv = Math.max(1 / 120, (now - (lastDetectT || now)) / 1000) || 1 / 60;
+      lastDetectT = now;
+      const cur = [];
+      for (const lm of lms) {
+        const thumb = lm[4], idx = lm[8], wrist = lm[0], mmcp = lm[9];
+        const gx = canvas.width - ((thumb.x + idx.x) / 2) * canvas.width; // 鏡像反転
+        const gy = ((thumb.y + idx.y) / 2) * canvas.height;
+        const dTip = Math.hypot(thumb.x - idx.x, thumb.y - idx.y);
+        const ref = Math.hypot(wrist.x - mmcp.x, wrist.y - mmcp.y) || 1e-4;
+        cur.push({ gx, gy, ratio: dTip / ref, lm, vx: 0, vy: 0 });
+      }
+      // 直近の点と最も近いものから速度を推定（手の入れ替わりに強く）
+      for (const h of cur) {
+        let best = null, bd = 1e9;
+        for (const p of prevPts) { const d = Math.hypot(h.gx - p.x, h.gy - p.y); if (d < bd) { bd = d; best = p; } }
+        if (best && bd < 320) {
+          let vx = (h.gx - best.x) / dtv, vy = (h.gy - best.y) / dtv;
+          const sp = Math.hypot(vx, vy);
+          if (sp > MAX_HAND_SPEED) { const k = MAX_HAND_SPEED / sp; vx *= k; vy *= k; }
+          h.vx = vx; h.vy = vy;
+        }
+      }
+      prevPts = cur.map((h) => ({ x: h.gx, y: h.gy }));
+      hands = cur;
+    }
+
+    function processSide(idx, hand, dt) {
+      const s = sides[idx];
+      if (!hand) {
+        if (s.holding) { s.holding.held = false; s.holding = null; }
+        s.present = false; s.pinching = false; return;
+      }
+      s.present = true; s.gx = hand.gx; s.gy = hand.gy;
+      const prev = s.pinching;
+      let now = prev;
+      if (prev) { if (hand.ratio > PINCH_OFF) now = false; }
+      else { if (hand.ratio < PINCH_ON) now = true; }
+
+      if (now && !prev) {
+        // つまんだ → 自分の色の一番近い玉を掴む
+        let best = null, bd = GRAB_R;
+        for (const p of pieces) {
+          if (p.color !== idx || p.out || p.held) continue;
+          const d = Math.hypot(p.x - hand.gx, p.y - hand.gy);
+          if (d < bd) { bd = d; best = p; }
+        }
+        if (best) { best.held = true; best.vx = 0; best.vy = 0; s.holding = best; s.holdTime = 0; }
+      }
+      if (!now && prev) {
+        // 離した → 手の勢いで弾く
+        if (s.holding) {
+          s.holding.vx = hand.vx * LAUNCH_GAIN;
+          s.holding.vy = hand.vy * LAUNCH_GAIN;
+          s.holding.held = false; s.holding = null;
+        }
+      }
+      s.pinching = now;
+      if (s.holding) {
+        s.holding.x = hand.gx; s.holding.y = hand.gy;
+        s.aimVX = hand.vx; s.aimVY = hand.vy;
+        s.holdTime += dt;
+        if (s.holdTime > MAX_HOLD) { s.holding.held = false; s.holding = null; }
+      }
+    }
+
+    // ---- メインループ ----
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.04, (now - lastTime) / 1000);
+      lastTime = now;
+
+      timeLeft -= dt;
+      updateTimer();
+      if (timeLeft <= 0) { endGame(); return; }
+
+      // 手検出 & プレイヤー割り当て（左の手＝青, 右の手＝赤）
+      detectHands(now);
+      let blueHand = null, redHand = null;
+      if (hands.length >= 2) {
+        const sorted = [...hands].sort((a, b) => a.gx - b.gx);
+        blueHand = sorted[0]; redHand = sorted[sorted.length - 1];
+      } else if (hands.length === 1) {
+        const h = hands[0];
+        if (h.gx < canvas.width / 2) blueHand = h; else redHand = h;
+      }
+      processSide(0, blueHand, dt);
+      processSide(1, redHand, dt);
+
+      const fr = Math.exp(-FRICTION_K * dt);
+
+      // 自由な玉の移動 + 摩擦
+      for (const p of pieces) {
+        if (p.held || p.out) continue;
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        p.vx *= fr; p.vy *= fr;
+        if (Math.hypot(p.vx, p.vy) < 8) { p.vx = 0; p.vy = 0; }
+      }
+
+      // 玉どうしの衝突（等質量・弾性）
+      for (let i = 0; i < pieces.length; i++) {
+        const a = pieces[i];
+        if (a.held || a.out) continue;
+        for (let j = i + 1; j < pieces.length; j++) {
+          const c = pieces[j];
+          if (c.held || c.out) continue;
+          const dx = c.x - a.x, dy = c.y - a.y;
+          let d = Math.hypot(dx, dy);
+          const min = PIECE_R * 2;
+          if (d < min && d > 0) {
+            const nx = dx / d, ny = dy / d;
+            const overlap = (min - d) / 2;
+            a.x -= nx * overlap; a.y -= ny * overlap;
+            c.x += nx * overlap; c.y += ny * overlap;
+            const relAlong = (a.vx - c.vx) * nx + (a.vy - c.vy) * ny;
+            if (relAlong > 0) {
+              const imp = (1 + RESTITUTION) * relAlong / 2;
+              a.vx -= imp * nx; a.vy -= imp * ny;
+              c.vx += imp * nx; c.vy += imp * ny;
+            }
+          }
+        }
+      }
+
+      // 盤外判定（中心が盤の内側を出たらアウト）
+      let changed = false;
+      for (const p of pieces) {
+        if (p.held || p.out) continue;
+        if (p.x < L || p.x > R || p.y < T || p.y > B) {
+          p.out = true; p.outAge = 0;
+          burst(p.x, p.y, SIDE_COLORS[p.color], 16);
+          changed = true;
+        }
+      }
+
+      // アウトの玉のアニメ（滑りながら消える）
+      for (const p of pieces) {
+        if (!p.out) continue;
+        p.outAge += dt;
+        p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= fr; p.vy *= fr;
+      }
+      pieces = pieces.filter((p) => !(p.out && p.outAge > 0.5));
+
+      // パーティクル
+      for (const pa of particles) { pa.age += dt; pa.x += pa.vx * dt; pa.y += pa.vy * dt; pa.vx *= 0.92; pa.vy *= 0.92; }
+      particles = particles.filter((pa) => pa.age < pa.life);
+
+      if (changed) updateHud();
+      // 決着（どちらかが全滅）
+      if (aliveCount(0) === 0 || aliveCount(1) === 0) { endGame(); return; }
+
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    // ---- 描画 ----
+    function render() {
+      // ミラーしたカメラ + ベール
+      ctx.save();
+      ctx.translate(canvas.width, 0); ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+      ctx.fillStyle = "rgba(10,15,26,0.5)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 盤面
+      drawBoard();
+
+      // おはじき
+      for (const p of pieces) {
+        const spr = sprites[p.color];
+        let scale = PIECE_R / SPR_R;
+        let alpha = 1;
+        if (p.out) { const k = p.outAge / 0.5; scale *= (1 - k * 0.5); alpha = Math.max(0, 1 - k); }
+        const s = SPR_R * 2 * scale;
+        // 掴んでいる玉は持ち上がって見えるよう影を落とす
+        const held = p.held;
+        if (held) {
+          ctx.globalAlpha = 0.3;
+          ctx.fillStyle = "#000";
+          ctx.beginPath(); ctx.ellipse(p.x + 10, p.y + 14, PIECE_R, PIECE_R * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        ctx.globalAlpha = alpha;
+        const sz = held ? s * 1.12 : s;
+        ctx.drawImage(spr, p.x - sz / 2, p.y - sz / 2, sz, sz);
+        ctx.globalAlpha = 1;
+      }
+
+      // 各プレイヤーの照準 & 投げの向き
+      for (let i = 0; i < 2; i++) {
+        const s = sides[i];
+        if (!s.present) continue;
+        drawAim(s, SIDE_COLORS[i]);
+      }
+
+      // パーティクル
+      for (const pa of particles) {
+        ctx.globalAlpha = Math.max(0, 1 - pa.age / pa.life);
+        ctx.fillStyle = pa.color;
+        ctx.beginPath(); ctx.arc(pa.x, pa.y, pa.size, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawBoard() {
+      // 盤の外（ガター）は暗く、内側は木目調
+      const grad = ctx.createLinearGradient(0, T, 0, B);
+      grad.addColorStop(0, "rgba(150,110,60,0.32)");
+      grad.addColorStop(1, "rgba(110,75,40,0.32)");
+      ctx.fillStyle = grad;
+      roundRect(L, T, R - L, B - T, 26); ctx.fill();
+      // 縁取り（この線の外がアウト）
+      ctx.strokeStyle = "rgba(255,217,61,0.85)"; ctx.lineWidth = 5;
+      roundRect(L, T, R - L, B - T, 26); ctx.stroke();
+      ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1;
+      // 中央の仕切り線
+      ctx.beginPath(); ctx.moveTo(canvas.width / 2, T); ctx.lineTo(canvas.width / 2, B); ctx.stroke();
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawAim(s, color) {
+      const x = s.gx, y = s.gy;
+      ctx.save();
+      // 照準リング（つまむと色が濃くなる）
+      ctx.strokeStyle = color; ctx.lineWidth = 3;
+      ctx.globalAlpha = s.pinching ? 1 : 0.5;
+      ctx.beginPath(); ctx.arc(x, y, s.pinching ? 20 : 28, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+      // 掴んでいるときは投げの向き・強さを矢印で表示
+      if (s.holding) {
+        const sp = Math.hypot(s.aimVX, s.aimVY);
+        if (sp > 60) {
+          const len = Math.min(180, sp * 0.08);
+          const ux = s.aimVX / sp, uy = s.aimVY / sp;
+          ctx.strokeStyle = color; ctx.lineWidth = 5; ctx.lineCap = "round";
+          ctx.shadowColor = color; ctx.shadowBlur = 12;
+          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + ux * len, y + uy * len); ctx.stroke();
+          // 矢じり
+          const ax = x + ux * len, ay = y + uy * len, a = Math.atan2(uy, ux);
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(ax - Math.cos(a - 0.4) * 16, ay - Math.sin(a - 0.4) * 16);
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(ax - Math.cos(a + 0.4) * 16, ay - Math.sin(a + 0.4) * 16);
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        }
+      }
+      ctx.restore();
+    }
+  </script>
+</body>
+</html>

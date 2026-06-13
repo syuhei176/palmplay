@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Tama-ire — 手で弾いてカゴに入れるwebカメラゲーム</title>
+  <style>
+    :root {
+      --bg: #1a0f0a;
+      --accent: #ffd93d;
+      --accent2: #ff6b6b;
+      --danger: #ff4d6d;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: radial-gradient(circle at 50% 0%, #3a1f12 0%, var(--bg) 70%);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #stage { position: relative; width: 100vw; height: 100vh; }
+    #cam { display: none; }
+    #game { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    #hud {
+      position: absolute; top: 0; left: 0; right: 0;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 18px 24px; pointer-events: none;
+      font-variant-numeric: tabular-nums;
+    }
+    #score { font-size: 34px; font-weight: 800; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #score small { font-size: 14px; font-weight: 600; opacity: .7; display: block; letter-spacing: .15em; }
+    #best { font-size: 22px; font-weight: 700; opacity: .85; text-shadow: 0 2px 12px rgba(0,0,0,.6); text-align: right; }
+    #best small { font-size: 13px; font-weight: 600; opacity: .7; display: block; letter-spacing: .15em; }
+    #timer {
+      position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+      font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums;
+      text-shadow: 0 2px 12px rgba(0,0,0,.6);
+    }
+    #timer.low { color: var(--danger); animation: pulse .5s ease-in-out infinite; }
+    @keyframes pulse { 50% { transform: translateX(-50%) scale(1.18); } }
+    #combo {
+      position: absolute; top: 84px; left: 50%; transform: translateX(-50%);
+      font-size: 40px; font-weight: 900; color: var(--accent);
+      text-shadow: 0 0 18px rgba(255,217,61,.7); opacity: 0; transition: opacity .2s;
+    }
+
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 22px; background: rgba(26,15,10,.84); backdrop-filter: blur(6px);
+      text-align: center; padding: 24px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      font-size: clamp(40px, 8vw, 84px); font-weight: 900; letter-spacing: .02em;
+      background: linear-gradient(120deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    #overlay p { font-size: 17px; line-height: 1.8; opacity: .9; max-width: 480px; }
+    #overlay .big { font-size: 64px; font-weight: 900; }
+    .btn {
+      pointer-events: auto; cursor: pointer; border: none; font: inherit;
+      font-weight: 800; font-size: 22px; color: #2a160c;
+      background: linear-gradient(120deg, var(--accent), var(--accent2));
+      padding: 16px 44px; border-radius: 999px; box-shadow: 0 8px 30px rgba(255,107,107,.4);
+      transition: transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 38px rgba(255,107,107,.55); }
+    .btn:active { transform: translateY(0); }
+    .spinner {
+      width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.2);
+      border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: var(--danger); font-size: 15px; max-width: 460px; line-height: 1.7; }
+    .hint { font-size: 13px; opacity: .55; letter-spacing: .04em; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="score">0<small>SCORE</small></div>
+      <div id="timer">60</div>
+      <div id="best">0<small>BEST</small></div>
+    </div>
+    <div id="combo"></div>
+
+    <div id="overlay">
+      <h1>玉入れ&nbsp;TAMA-IRE</h1>
+      <p>足元にたまった<strong>紅白玉</strong>を、手ですくって上に弾こう。<br>
+         上を左右に動く<strong>🧺 カゴ</strong>に入れるとスコアUP！<br>
+         手のひら全体が当たり判定。両手でガンガン弾ける。60秒スコアアタック。</p>
+      <button class="btn" id="startBtn">スタート</button>
+      <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください</div>
+      <div id="err"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      HandLandmarker,
+      FilesetResolver,
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    const video = document.getElementById("cam");
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const scoreEl = document.getElementById("score");
+    const bestEl = document.getElementById("best");
+    const comboEl = document.getElementById("combo");
+    const timerEl = document.getElementById("timer");
+
+    // ---- 調整パラメータ ----
+    const GAME_TIME = 60;          // 制限時間（秒）
+    const MAX_HANDS = 2;           // 同時に扱う手の数（両手 / 2人）
+    const GRAVITY = 1500;          // 重力 px/s^2（小さいほどよく飛ぶ）
+    const BALL_R = 26;             // ボール半径
+    const POINT_R = 22;            // 手の各点の当たり判定半径
+    const TARGET_BALLS = 52;       // 場に保つ玉の数（大量）
+    const HAND_CARRY = 0.92;       // 手の速度をどれだけ玉に伝えるか
+    const SEPARATE_KICK = 90;      // 接触時に外へ押し出す力
+    const MAX_HAND_SPEED = 2000;   // 手の速度の上限（暴れ防止）
+    const WALL_REST = 0.55;        // 壁の反発
+    const FLOOR_REST = 0.42;       // 床の反発
+    const FRICTION = 0.86;         // 床の摩擦
+    const BASK_HW = 92;            // カゴ開口部の半幅
+    const BASK_DEPTH = 120;        // カゴの深さ
+    const RIM_R = 13;              // カゴ縁（左右の柱）の当たり判定
+    const HAND_COLORS = ["#ffd93d", "#4dd2ff"];
+
+    let handLandmarker = null;
+    let state = "idle";            // idle | playing | over
+    let balls = [];
+    let particles = [];
+    let rings = [];
+
+    // 手の前フレーム位置（速度算出用）と現在のコライダー
+    const handPrev = Array.from({ length: MAX_HANDS }, () => null);
+    let colliders = [];
+
+    let score = 0, best = 0, combo = 0, comboTimer = 0;
+    let elapsed = 0, timeLeft = GAME_TIME, lastSec = -1;
+    let dropTimer = 0, lastTime = 0, lastVideoTime = -1;
+
+    // カゴの状態
+    const bask = { x: 0, y: 0, phase: 0 };
+
+    // ボールのスプライト（紅・白）を一度だけ生成して使い回す
+    const SPR_R = 30;
+    const ballSprites = [makeBallSprite("#ff5252", "#b71c1c"), makeBallSprite("#ffffff", "#cfd8dc")];
+    function makeBallSprite(hi, lo) {
+      const c = document.createElement("canvas");
+      c.width = c.height = SPR_R * 2 + 6;
+      const g = c.getContext("2d");
+      const cx = c.width / 2, cy = c.height / 2;
+      const grad = g.createRadialGradient(cx - SPR_R * 0.35, cy - SPR_R * 0.4, SPR_R * 0.2, cx, cy, SPR_R);
+      grad.addColorStop(0, hi);
+      grad.addColorStop(1, lo);
+      g.fillStyle = grad;
+      g.beginPath(); g.arc(cx, cy, SPR_R, 0, Math.PI * 2); g.fill();
+      // ハイライト
+      g.fillStyle = "rgba(255,255,255,0.55)";
+      g.beginPath(); g.ellipse(cx - SPR_R * 0.3, cy - SPR_R * 0.38, SPR_R * 0.28, SPR_R * 0.18, -0.5, 0, Math.PI * 2); g.fill();
+      // ふちの影
+      g.strokeStyle = "rgba(0,0,0,0.18)"; g.lineWidth = 2;
+      g.beginPath(); g.arc(cx, cy, SPR_R - 1, 0, Math.PI * 2); g.stroke();
+      return c;
+    }
+
+    // ---- モデル / カメラ ----
+    async function loadModel() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: MAX_HANDS,
+      });
+    }
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+    }
+
+    startBtn.addEventListener("click", async () => {
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      try {
+        await startCamera();
+        if (!handLandmarker) await loadModel();
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        showError(e);
+      }
+    });
+
+    function showError(e) {
+      overlay.classList.remove("hidden");
+      const msg =
+        e?.name === "NotAllowedError"
+          ? "カメラの使用が許可されませんでした。ブラウザのカメラ設定から許可してください。"
+          : "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+      overlay.innerHTML =
+        '<h1>玉入れ&nbsp;TAMA-IRE</h1><div id="err"></div><button class="btn" id="retry">もう一度</button>';
+      overlay.querySelector("#err").textContent = msg;
+      overlay.querySelector("#retry").addEventListener("click", () => location.reload());
+    }
+
+    function resetGame() {
+      balls = []; particles = []; rings = [];
+      for (let h = 0; h < MAX_HANDS; h++) handPrev[h] = null;
+      colliders = [];
+      score = 0; combo = 0; comboTimer = 0;
+      elapsed = 0; timeLeft = GAME_TIME; lastSec = -1; dropTimer = 0;
+      best = Number(localStorage.getItem("tamaire_best") || 0);
+      bask.phase = 0;
+      bask.y = canvas.height * 0.17;
+      bask.x = canvas.width / 2;
+      // 足元に玉を敷き詰めておく
+      for (let i = 0; i < 38; i++) spawnBall(true);
+      updateHud();
+    }
+
+    function updateHud() {
+      scoreEl.innerHTML = score + "<small>SCORE</small>";
+      bestEl.innerHTML = Math.max(best, score) + "<small>BEST</small>";
+    }
+
+    function updateTimer() {
+      const s = Math.max(0, Math.ceil(timeLeft));
+      if (s !== lastSec) {
+        lastSec = s;
+        timerEl.textContent = s;
+        timerEl.classList.toggle("low", s <= 10);
+      }
+    }
+
+    // ---- 玉の生成 ----
+    function spawnBall(onFloor = false) {
+      const color = Math.random() < 0.5 ? 0 : 1;
+      if (onFloor) {
+        balls.push({
+          x: BALL_R + Math.random() * (canvas.width - BALL_R * 2),
+          y: canvas.height - 30 - Math.random() * 120,
+          vx: (Math.random() - 0.5) * 60, vy: 0, color, scored: false,
+        });
+      } else {
+        // 上から落として補充（カゴの真上は避ける）
+        let x = BALL_R + Math.random() * (canvas.width - BALL_R * 2);
+        if (Math.abs(x - bask.x) < BASK_HW + 60) x = (x < bask.x ? -1 : 1) * (BASK_HW + 80) + bask.x;
+        x = Math.max(BALL_R, Math.min(canvas.width - BALL_R, x));
+        balls.push({ x, y: -BALL_R, vx: (Math.random() - 0.5) * 80, vy: 0, color, scored: false });
+      }
+    }
+
+    function burst(x, y, color, n = 16) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 90 + Math.random() * 300;
+        particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 120,
+          life: 0.55 + Math.random() * 0.4, age: 0, color, size: 4 + Math.random() * 7 });
+      }
+    }
+
+    function scoreBall(b) {
+      b.scored = true; b.scoreAge = 0;
+      b.tx = bask.x; b.ty = bask.y + BASK_DEPTH * 0.55;
+      combo++; comboTimer = 1.6;
+      const gain = 10 + Math.max(0, combo - 1) * 5;
+      score += gain;
+      burst(bask.x, bask.y, "#ffd166", 18);
+      rings.push({ x: bask.x, y: bask.y, r: 12, life: 0.45, age: 0 });
+      if (combo >= 2) showCombo(combo);
+      if (score > best) { best = score; localStorage.setItem("tamaire_best", best); }
+      updateHud();
+    }
+
+    function showCombo(c) {
+      comboEl.textContent = c + " COMBO!";
+      comboEl.style.opacity = "1";
+      clearTimeout(showCombo._t);
+      showCombo._t = setTimeout(() => (comboEl.style.opacity = "0"), 900);
+    }
+
+    function gameOver() {
+      state = "over";
+      best = Math.max(best, score);
+      localStorage.setItem("tamaire_best", best);
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        '<h1>TIME UP!</h1><p>カゴに入れた点数</p><div class="big">' + score +
+        '</div><p style="opacity:.8">BEST ' + best + '</p><button class="btn" id="again">もう一度</button>';
+      overlay.querySelector("#again").addEventListener("click", () => {
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      });
+    }
+
+    // ---- 手検出 → 21点の画面座標＋速度（フレーム更新時のみ再計算）----
+    function updateColliders(nowMs) {
+      if (video.currentTime === lastVideoTime) return;
+      lastVideoTime = video.currentTime;
+      const res = handLandmarker.detectForVideo(video, nowMs);
+      const handsLm = res?.landmarks || [];
+      const next = [];
+      for (let h = 0; h < handsLm.length && h < MAX_HANDS; h++) {
+        const lm = handsLm[h];
+        const pts = lm.map((p) => ({
+          x: canvas.width - p.x * canvas.width, // 鏡像に合わせて反転
+          y: p.y * canvas.height,
+        }));
+        const prev = handPrev[h];
+        const dtv = prev ? Math.max(1 / 120, (nowMs - prev.time) / 1000) : 1 / 60;
+        const vels = pts.map((p, i) => {
+          if (!prev) return { x: 0, y: 0 };
+          let vx = (p.x - prev.pts[i].x) / dtv;
+          let vy = (p.y - prev.pts[i].y) / dtv;
+          const sp = Math.hypot(vx, vy);
+          if (sp > MAX_HAND_SPEED) { const k = MAX_HAND_SPEED / sp; vx *= k; vy *= k; }
+          return { x: vx, y: vy };
+        });
+        next.push({ pts, vels, lm });
+        handPrev[h] = { pts: pts.map((p) => ({ x: p.x, y: p.y })), time: nowMs };
+      }
+      for (let h = handsLm.length; h < MAX_HANDS; h++) handPrev[h] = null;
+      colliders = next;
+    }
+
+    // ---- メインループ ----
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.04, (now - lastTime) / 1000);
+      lastTime = now;
+      elapsed += dt;
+
+      timeLeft -= dt;
+      updateTimer();
+      if (timeLeft <= 0) { gameOver(); return; }
+
+      // カゴを左右に動かす（時間で速く）
+      const baskSpeed = 0.5 + Math.min(1.2, elapsed * 0.02);
+      bask.phase += dt * baskSpeed;
+      const amp = canvas.width / 2 - BASK_HW - 60;
+      bask.x = canvas.width / 2 + Math.sin(bask.phase) * amp;
+      const bx = bask.x, by = bask.y;
+
+      // 手検出
+      updateColliders(now);
+
+      // 補充
+      const alive = balls.reduce((n, b) => n + (b.scored ? 0 : 1), 0);
+      if (alive < TARGET_BALLS) {
+        dropTimer -= dt;
+        if (dropTimer <= 0) { spawnBall(false); dropTimer = 0.18; }
+      }
+
+      const floorY = canvas.height - 28;
+
+      // 1) 重力 + 移動
+      for (const b of balls) {
+        if (b.scored) continue;
+        b.py = b.y;
+        b.vy += GRAVITY * dt;
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+      }
+
+      // 2) 玉どうしの衝突（重なりを解消して山になる）
+      for (let i = 0; i < balls.length; i++) {
+        const a = balls[i];
+        if (a.scored) continue;
+        for (let j = i + 1; j < balls.length; j++) {
+          const c = balls[j];
+          if (c.scored) continue;
+          let dx = c.x - a.x, dy = c.y - a.y;
+          let d = Math.hypot(dx, dy);
+          const min = BALL_R * 2;
+          if (d < min && d > 0) {
+            const nx = dx / d, ny = dy / d;
+            const overlap = (min - d) / 2;
+            a.x -= nx * overlap; a.y -= ny * overlap;
+            c.x += nx * overlap; c.y += ny * overlap;
+            const rel = (c.vx - a.vx) * nx + (c.vy - a.vy) * ny;
+            if (rel < 0) {
+              const imp = rel * 0.5;
+              a.vx += imp * nx; a.vy += imp * ny;
+              c.vx -= imp * nx; c.vy -= imp * ny;
+            }
+          }
+        }
+      }
+
+      // 3) 手との衝突（手の速度を玉に伝えて弾く）
+      for (const hand of colliders) {
+        for (let i = 0; i < hand.pts.length; i++) {
+          const p = hand.pts[i], v = hand.vels[i];
+          for (const b of balls) {
+            if (b.scored) continue;
+            let dx = b.x - p.x, dy = b.y - p.y;
+            let d = Math.hypot(dx, dy);
+            const rad = BALL_R + POINT_R;
+            if (d < rad) {
+              let nx, ny;
+              if (d < 1e-3) { nx = 0; ny = -1; } else { nx = dx / d; ny = dy / d; }
+              b.x = p.x + nx * rad; b.y = p.y + ny * rad;
+              b.vx = b.vx * 0.15 + v.x * HAND_CARRY + nx * SEPARATE_KICK;
+              b.vy = b.vy * 0.15 + v.y * HAND_CARRY + ny * SEPARATE_KICK;
+            }
+          }
+        }
+      }
+
+      // 4) カゴの縁（左右の柱）に当たったら弾く
+      for (const b of balls) {
+        if (b.scored) continue;
+        for (const px of [bx - BASK_HW, bx + BASK_HW]) {
+          const dx = b.x - px, dy = b.y - by;
+          const d = Math.hypot(dx, dy), rad = BALL_R + RIM_R;
+          if (d < rad && d > 0) {
+            const nx = dx / d, ny = dy / d;
+            b.x = px + nx * rad; b.y = by + ny * rad;
+            const vn = b.vx * nx + b.vy * ny;
+            if (vn < 0) { b.vx -= (1 + WALL_REST) * vn * nx; b.vy -= (1 + WALL_REST) * vn * ny; }
+          }
+        }
+      }
+
+      // 5) 壁・床・天井
+      for (const b of balls) {
+        if (b.scored) continue;
+        if (b.x < BALL_R) { b.x = BALL_R; b.vx = Math.abs(b.vx) * WALL_REST; }
+        if (b.x > canvas.width - BALL_R) { b.x = canvas.width - BALL_R; b.vx = -Math.abs(b.vx) * WALL_REST; }
+        if (b.y < BALL_R) { b.y = BALL_R; b.vy = Math.abs(b.vy) * WALL_REST; }
+        if (b.y > floorY) {
+          b.y = floorY; b.vy = -Math.abs(b.vy) * FLOOR_REST; b.vx *= FRICTION;
+          if (Math.abs(b.vy) < 40) b.vy = 0;
+        }
+      }
+
+      // 6) カゴ入り判定（上から開口部を通過したら得点）
+      for (const b of balls) {
+        if (b.scored) continue;
+        if (b.vy > 0 && b.py <= by && b.y >= by && Math.abs(b.x - bx) < BASK_HW - BALL_R * 0.2) {
+          scoreBall(b);
+        }
+      }
+
+      // 7) 得点した玉のアニメ → 消す
+      for (const b of balls) {
+        if (!b.scored) continue;
+        b.scoreAge += dt;
+        b.x += (b.tx - b.x) * Math.min(1, dt * 12);
+        b.y += (b.ty - b.y) * Math.min(1, dt * 12);
+      }
+      balls = balls.filter((b) => !(b.scored && b.scoreAge > 0.3));
+
+      // エフェクト
+      for (const p of particles) { p.age += dt; p.vy += 800 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
+      particles = particles.filter((p) => p.age < p.life);
+      for (const r of rings) { r.age += dt; r.r += 240 * dt; }
+      rings = rings.filter((r) => r.age < r.life);
+
+      if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 0; }
+
+      render(bx, by);
+      requestAnimationFrame(loop);
+    }
+
+    // ---- 描画 ----
+    function render(bx, by) {
+      // ミラーしたカメラ映像 + ベール
+      ctx.save();
+      ctx.translate(canvas.width, 0); ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+      ctx.fillStyle = "rgba(26,15,10,0.4)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 床ライン
+      const floorY = canvas.height - 28;
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(0, floorY + BALL_R, canvas.width, canvas.height);
+
+      // カゴの本体（玉より奥）
+      drawBasketBody(bx, by);
+
+      // ボール
+      for (const b of balls) {
+        const spr = ballSprites[b.color];
+        let scale = (BALL_R / SPR_R);
+        if (b.scored) scale *= Math.max(0, 1 - b.scoreAge / 0.3);
+        const s = SPR_R * 2 * scale;
+        ctx.drawImage(spr, b.x - s / 2, b.y - s / 2, s, s);
+      }
+
+      // カゴの手前の縁（入る玉が後ろに回り込んで見える）
+      drawBasketRim(bx, by);
+
+      // 波紋
+      for (const r of rings) {
+        ctx.globalAlpha = Math.max(0, 1 - r.age / r.life);
+        ctx.strokeStyle = "#ffd166"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      // パーティクル
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // 手（当たり判定の見える化）
+      for (let h = 0; h < colliders.length; h++) {
+        drawHand(colliders[h].lm, HAND_COLORS[h % HAND_COLORS.length]);
+      }
+    }
+
+    function drawBasketBody(bx, by) {
+      const hw = BASK_HW, d = BASK_DEPTH;
+      ctx.save();
+      // 背の高いポール
+      ctx.strokeStyle = "rgba(120,80,40,0.8)"; ctx.lineWidth = 10; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(bx, by + d * 0.4); ctx.lineTo(bx, canvas.height - 28); ctx.stroke();
+      // カゴ本体（台形のカップ）
+      const botHw = hw * 0.62, botY = by + d;
+      const grad = ctx.createLinearGradient(0, by, 0, botY);
+      grad.addColorStop(0, "#d98a3d"); grad.addColorStop(1, "#a85d22");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(bx - hw, by);
+      ctx.lineTo(bx - botHw, botY);
+      ctx.quadraticCurveTo(bx, botY + 22, bx + botHw, botY);
+      ctx.lineTo(bx + hw, by);
+      ctx.closePath();
+      ctx.fill();
+      // 編み目（横）
+      ctx.strokeStyle = "rgba(80,45,15,0.45)"; ctx.lineWidth = 2;
+      for (let k = 1; k <= 4; k++) {
+        const t = k / 5, yy = by + d * t;
+        const w = hw + (botHw - hw) * t;
+        ctx.beginPath(); ctx.moveTo(bx - w, yy); ctx.lineTo(bx + w, yy); ctx.stroke();
+      }
+      // 編み目（縦）
+      for (let k = -2; k <= 2; k++) {
+        const tx = (k / 2);
+        ctx.beginPath();
+        ctx.moveTo(bx + hw * tx, by);
+        ctx.lineTo(bx + botHw * tx, botY);
+        ctx.stroke();
+      }
+      // 開口部の内側（暗く）
+      ctx.fillStyle = "rgba(30,15,5,0.55)";
+      ctx.beginPath(); ctx.ellipse(bx, by, hw, hw * 0.32, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    function drawBasketRim(bx, by) {
+      const hw = BASK_HW;
+      ctx.save();
+      // 開口部の縁（リング）
+      ctx.strokeStyle = "#ff6b6b"; ctx.lineWidth = 10; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.ellipse(bx, by, hw, hw * 0.32, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = "#ffd93d"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(bx, by, hw, hw * 0.32, 0, 0, Math.PI * 2); ctx.stroke();
+      // 左右の柱（当たり判定に対応）
+      ctx.fillStyle = "#ff6b6b";
+      for (const px of [bx - hw, bx + hw]) {
+        ctx.beginPath(); ctx.arc(px, by, RIM_R * 0.8, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    const HAND_CONNECTIONS = [
+      [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+      [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17],
+    ];
+    function drawHand(lm, color) {
+      ctx.save();
+      ctx.strokeStyle = color; ctx.globalAlpha = 0.4; ctx.lineWidth = 4;
+      ctx.lineCap = "round"; ctx.shadowColor = color; ctx.shadowBlur = 10;
+      ctx.beginPath();
+      for (const [a, b] of HAND_CONNECTIONS) {
+        const pa = lm[a], pb = lm[b];
+        ctx.moveTo(canvas.width - pa.x * canvas.width, pa.y * canvas.height);
+        ctx.lineTo(canvas.width - pb.x * canvas.width, pb.y * canvas.height);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = color;
+      for (const p of lm) {
+        ctx.beginPath();
+        ctx.arc(canvas.width - p.x * canvas.width, p.y * canvas.height, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      ctx.shadowBlur = 0;
+    }
+  </script>
+</body>
+</html>

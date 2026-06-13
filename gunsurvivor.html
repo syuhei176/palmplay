@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Gun Survivor — 指ガンで撃つwebカメラサバイバルシューティング</title>
+  <style>
+    :root { --bg: #0b0d1a; --accent: #38f9d7; --danger: #ff4d6d; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: radial-gradient(circle at 50% 0%, #2a1420 0%, var(--bg) 70%);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden; -webkit-user-select: none; user-select: none;
+    }
+    #stage { position: relative; width: 100vw; height: 100vh; }
+    #cam { display: none; }
+    #game { width: 100%; height: 100%; object-fit: cover; display: block; cursor: none; }
+
+    #hud {
+      position: absolute; top: 0; left: 0; right: 0;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 18px 24px; pointer-events: none; font-variant-numeric: tabular-nums;
+    }
+    #score { font-size: 32px; font-weight: 800; text-shadow: 0 2px 12px rgba(0,0,0,.7); }
+    #score small { font-size: 13px; font-weight: 600; opacity: .7; display: block; letter-spacing: .15em; }
+    #hp { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); font-size: 30px; letter-spacing: 3px; text-shadow: 0 2px 12px rgba(0,0,0,.7); }
+    #ammo { font-size: 30px; font-weight: 800; text-align: right; text-shadow: 0 2px 12px rgba(0,0,0,.7); }
+    #ammo small { font-size: 13px; font-weight: 600; opacity: .7; display: block; letter-spacing: .15em; }
+    #ammo.reload { color: #ffd166; }
+    #ammo.empty { color: var(--danger); }
+
+    #overlay {
+      position: absolute; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 20px;
+      background: rgba(8,10,22,.85); backdrop-filter: blur(6px); text-align: center; padding: 24px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      font-size: clamp(38px, 7.5vw, 80px); font-weight: 900; letter-spacing: .02em;
+      background: linear-gradient(120deg, var(--danger), #ffd166);
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    #overlay p { font-size: 16px; line-height: 1.8; opacity: .85; max-width: 480px; }
+    #overlay .big { font-size: 60px; font-weight: 900; }
+    .btn {
+      pointer-events: auto; cursor: pointer; border: none; font: inherit; font-weight: 800; font-size: 22px;
+      color: #1a0a0a; background: linear-gradient(120deg, var(--danger), #ffd166);
+      padding: 16px 44px; border-radius: 999px; box-shadow: 0 8px 30px rgba(255,77,109,.3);
+      transition: transform .12s;
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .spinner {
+      width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.2);
+      border-top-color: var(--danger); border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: var(--danger); font-size: 15px; max-width: 480px; line-height: 1.7; }
+    .hint { font-size: 13px; opacity: .55; letter-spacing: .04em; }
+    .pose { font-size: 15px; opacity: .9; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="score">0<small>SCORE</small></div>
+      <div id="hp">❤️❤️❤️</div>
+      <div id="ammo">8<small>AMMO</small></div>
+    </div>
+
+    <div id="overlay">
+      <h1>GUN SURVIVOR</h1>
+      <p class="pose">👉 <strong>人差し指で照準</strong>、👍 <strong>立てた親指を倒すと発砲</strong>（撃つたびに親指を立て直す）</p>
+      <p>迫りくるゾンビ 🧟 を撃ち倒して生き延びろ。<br>
+         頭を撃てば一撃＆ボーナス。弾切れは <strong>画面の下を狙って</strong> リロード。<br>
+         接近されるとライフが減る。</p>
+      <button class="btn" id="startBtn">スタート</button>
+      <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください</div>
+      <div id="err"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      HandLandmarker,
+      FilesetResolver,
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    const video = document.getElementById("cam");
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const scoreEl = document.getElementById("score");
+    const hpEl = document.getElementById("hp");
+    const ammoEl = document.getElementById("ammo");
+
+    // ---- 定数 ----
+    const NEAR = 1, DEPTH = 7;
+    const ENEMY_BASE = 150;
+    const MAG = 8, RELOAD_TIME = 1.0;
+    const ARM = 0.8;        // 親指がこれ以上開いたら「構え」(rad)
+    const FIRE = 0.45;      // ここまで親指が倒れたら発砲
+    const ASSIST = 1.22;    // エイムアシスト（当たり判定の拡大率）
+    const BEST_KEY = "gunsurvivor_best";
+    const TYPES = {
+      walker: { hp: 2, speed: 0.06, sizeMul: 1.0, emoji: ["🧟", "🧟‍♂️", "🧟‍♀️"], dmg: 1 },
+      bat:    { hp: 1, speed: 0.20, sizeMul: 0.7, emoji: ["🦇"], dmg: 1, fly: true },
+      brute:  { hp: 3, speed: 0.08, sizeMul: 1.35, emoji: ["👹"], dmg: 1 },
+    };
+
+    let handLandmarker = null;
+    let state = "idle";
+    let W = 1280, H = 720;
+    let VP = { x: 640, y: 300 };
+
+    let enemies = [], particles = [], tracers = [];
+    let score = 0, kills = 0, hp = 3, ammo = MAG;
+    let reloading = false, reloadT = 0, emptyClick = 0;
+    let triggerArmed = false, handSeen = false;
+    let muzzle = 0, recoil = 0, flashAlpha = 0;
+    let elapsed = 0, spawnTimer = 0;
+    let lastTime = 0, lastVideoTime = -1, spin = 0;
+    let reticleX = 640, reticleY = 360;
+    let best = +(localStorage.getItem(BEST_KEY) || 0);
+    const euroX = new OneEuro(1.6, 0.02), euroY = new OneEuro(1.6, 0.02);
+
+    // ---- One Euro Filter（ジッタ低減・低遅延）----
+    function OneEuro(minCutoff, beta, dCutoff = 1.0) {
+      this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff;
+      this.xPrev = null; this.dxPrev = 0;
+    }
+    OneEuro.prototype.alpha = function (cutoff, dt) {
+      const tau = 1 / (2 * Math.PI * cutoff);
+      return 1 / (1 + tau / dt);
+    };
+    OneEuro.prototype.filter = function (x, dt) {
+      if (this.xPrev == null) { this.xPrev = x; return x; }
+      const dx = (x - this.xPrev) / dt;
+      const aD = this.alpha(this.dCutoff, dt);
+      const dxHat = aD * dx + (1 - aD) * this.dxPrev;
+      const cutoff = this.minCutoff + this.beta * Math.abs(dxHat);
+      const a = this.alpha(cutoff, dt);
+      const xHat = a * x + (1 - a) * this.xPrev;
+      this.xPrev = xHat; this.dxPrev = dxHat;
+      return xHat;
+    };
+    OneEuro.prototype.reset = function () { this.xPrev = null; this.dxPrev = 0; };
+
+    async function loadModel() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: 1,
+      });
+    }
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width = W = video.videoWidth || 1280;
+      canvas.height = H = video.videoHeight || 720;
+      VP = { x: W / 2, y: H * 0.42 };
+      reticleX = W / 2; reticleY = H / 2;
+    }
+
+    startBtn.addEventListener("click", async () => {
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      try {
+        await startCamera();
+        if (!handLandmarker) await loadModel();
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        showError(e);
+      }
+    });
+
+    function showError(e) {
+      overlay.classList.remove("hidden");
+      const msg =
+        e?.name === "NotAllowedError"
+          ? "カメラの使用が許可されませんでした。ブラウザのカメラ設定から許可してください。"
+          : "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+      overlay.innerHTML =
+        '<h1>GUN SURVIVOR</h1><div id="err"></div><button class="btn" id="retry">もう一度</button>';
+      overlay.querySelector("#err").textContent = msg;
+      overlay.querySelector("#retry").addEventListener("click", () => location.reload());
+    }
+
+    function resetGame() {
+      enemies = []; particles = []; tracers = [];
+      score = 0; kills = 0; hp = 3; ammo = MAG;
+      reloading = false; reloadT = 0; emptyClick = 0;
+      triggerArmed = false; muzzle = 0; recoil = 0; flashAlpha = 0;
+      elapsed = 0; spawnTimer = 0;
+      euroX.reset(); euroY.reset();
+      updateHud();
+    }
+
+    function updateHud() {
+      scoreEl.innerHTML = score + "<small>SCORE</small>";
+      hpEl.textContent = "❤️".repeat(Math.max(0, hp)) + "🖤".repeat(Math.max(0, 3 - hp));
+      ammoEl.classList.toggle("reload", reloading);
+      ammoEl.classList.toggle("empty", !reloading && ammo === 0);
+      ammoEl.innerHTML = (reloading ? "…" : ammo) + "<small>" + (reloading ? "RELOAD" : "AMMO") + "</small>";
+    }
+
+    function gameOver() {
+      state = "over";
+      if (score > best) { best = score; localStorage.setItem(BEST_KEY, best); }
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        '<h1>YOU DIED</h1><p>SCORE</p><div class="big">' + score +
+        "</div><p>🧟 撃破 " + kills + " ・ 生存 " + Math.floor(elapsed) + "秒 ・ 🏆 BEST " + best +
+        '</p><button class="btn" id="again">もう一度</button>';
+      overlay.querySelector("#again").addEventListener("click", () => {
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing"; lastTime = performance.now();
+        requestAnimationFrame(loop);
+      });
+    }
+
+    function project(ax, ay, z) {
+      const scale = NEAR / (NEAR + z * DEPTH);
+      return { x: VP.x + (ax - VP.x) * scale, y: VP.y + (ay - VP.y) * scale, scale };
+    }
+
+    function spawnEnemy() {
+      const r = Math.random();
+      const key = r < 0.18 ? "brute" : r < 0.45 ? "bat" : "walker";
+      const t = TYPES[key];
+      const baseAx = W * (0.12 + Math.random() * 0.76);
+      const ay = H * (t.fly ? 0.2 + Math.random() * 0.4 : 0.5 + Math.random() * 0.34);
+      enemies.push({
+        key, baseAx, ax: baseAx, ay,
+        z: 1, zSpeed: t.speed + elapsed * 0.0012 + Math.random() * 0.02,
+        hp: t.hp, sizeMul: t.sizeMul, dmg: t.dmg, fly: !!t.fly,
+        emoji: t.emoji[(Math.random() * t.emoji.length) | 0],
+        phase: Math.random() * 6.28,
+      });
+    }
+
+    function burst(x, y, color, n = 16) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2, s = 90 + Math.random() * 300;
+        particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 60,
+          life: 0.5 + Math.random() * 0.4, age: 0, color, size: 3 + Math.random() * 7 });
+      }
+    }
+
+    // ---- 発砲（ヒットスキャン＋エイムアシスト＋ヘッドショット）----
+    function fire() {
+      if (reloading) return;
+      if (ammo <= 0) { emptyClick = 0.25; return; }
+      ammo--; muzzle = 0.07; recoil = 20;
+      tracers.push({ x: reticleX, y: reticleY, age: 0 });
+      updateHud();
+
+      const cand = enemies.map((e, i) => ({ e, i })).sort((a, b) => a.e.z - b.e.z);
+      for (const { e, i } of cand) {
+        const p = project(e.ax, e.ay, e.z);
+        const bodyR = ENEMY_BASE * e.sizeMul * p.scale * 0.5 * ASSIST;
+        if (Math.hypot(reticleX - p.x, reticleY - p.y) < bodyR) {
+          const headCy = p.y - bodyR * 0.55, headR = bodyR * 0.5;
+          const head = Math.hypot(reticleX - p.x, reticleY - headCy) < headR;
+          hitEnemy(i, head, p);
+          return;
+        }
+      }
+    }
+
+    function hitEnemy(i, head, p) {
+      const e = enemies[i];
+      if (head) {
+        burst(reticleX, reticleY, "#ff4d6d", 22);
+        score += 200; kills++; enemies.splice(i, 1);
+      } else {
+        e.hp--;
+        burst(reticleX, reticleY, "#ffd166", 8);
+        if (e.hp <= 0) { score += 100; kills++; enemies.splice(i, 1); }
+      }
+      updateHud();
+    }
+
+    // ---- 手検出（照準＝人差し指先、トリガー＝親指の角度）----
+    function detectHand(nowMs) {
+      if (video.currentTime === lastVideoTime) return;
+      lastVideoTime = video.currentTime;
+      const res = handLandmarker.detectForVideo(video, nowMs);
+      const lm = res?.landmarks?.[0];
+      if (!lm) { handSeen = false; triggerArmed = false; return; }
+      handSeen = true;
+      // 照準：人差し指先（鏡像）
+      rawAimX = canvas.width - lm[8].x * canvas.width;
+      rawAimY = lm[8].y * canvas.height;
+      // トリガー：親指(2→4)と人差し指(5→8)のなす角
+      const tx = (lm[4].x - lm[2].x) * W, ty = (lm[4].y - lm[2].y) * H;
+      const ix = (lm[8].x - lm[5].x) * W, iy = (lm[8].y - lm[5].y) * H;
+      const dot = tx * ix + ty * iy;
+      const mag = Math.hypot(tx, ty) * Math.hypot(ix, iy) || 1e-6;
+      thumbAngle = Math.acos(Math.max(-1, Math.min(1, dot / mag)));
+    }
+    let rawAimX = 640, rawAimY = 360, thumbAngle = 1.2, hasAim = false;
+
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now; elapsed += dt; spin += dt;
+
+      detectHand(now);
+
+      if (handSeen) {
+        hasAim = true;
+        reticleX = euroX.filter(rawAimX, dt);
+        reticleY = euroY.filter(rawAimY, dt);
+        // トリガー：構え→倒すで1発（撃ったら親指を立て直す）
+        if (thumbAngle > ARM) triggerArmed = true;
+        else if (triggerArmed && thumbAngle < FIRE) { fire(); triggerArmed = false; }
+      }
+
+      // リロード：画面の下を狙う or 弾切れ
+      if (!reloading && ammo < MAG && reticleY > H * 0.9) { reloading = true; reloadT = 0; updateHud(); }
+      if (reloading) {
+        reloadT += dt;
+        if (reloadT >= RELOAD_TIME) { ammo = MAG; reloading = false; updateHud(); }
+      }
+
+      // スポーン
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawnEnemy();
+        spawnTimer = Math.max(0.7, 1.7 - elapsed * 0.009);
+      }
+
+      // 敵更新（接近）
+      for (const e of enemies) {
+        e.z -= e.zSpeed * dt;
+        if (e.fly) e.ax = e.baseAx + Math.sin(elapsed * 3 + e.phase) * W * 0.07;
+      }
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        if (enemies[i].z <= 0) {
+          hp -= enemies[i].dmg; flashAlpha = 0.6;
+          enemies.splice(i, 1);
+          updateHud();
+          if (hp <= 0) { gameOver(); return; }
+        }
+      }
+
+      for (const p of particles) { p.age += dt; p.vy += 700 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
+      particles = particles.filter((p) => p.age < p.life);
+      for (const t of tracers) t.age += dt;
+      tracers = tracers.filter((t) => t.age < 0.08);
+      if (muzzle > 0) muzzle -= dt;
+      if (recoil > 0) recoil = Math.max(0, recoil - dt * 120);
+      if (emptyClick > 0) emptyClick -= dt;
+      if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt * 1.6);
+
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    function render() {
+      ctx.save();
+      ctx.translate(W, 0); ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, W, H);
+      ctx.restore();
+      ctx.fillStyle = "rgba(10,4,10,0.45)";
+      ctx.fillRect(0, 0, W, H);
+
+      // 敵（奥→手前）
+      const sorted = enemies.slice().sort((a, b) => b.z - a.z);
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      for (const e of sorted) {
+        const p = project(e.ax, e.ay, e.z);
+        const size = ENEMY_BASE * e.sizeMul * p.scale;
+        if (size < 4) continue;
+        ctx.font = size + "px serif";
+        ctx.fillText(e.emoji, p.x, p.y);
+      }
+
+      // 着弾トレーサー（銃口＝画面下中央 → レティクル）
+      for (const t of tracers) {
+        const a = 1 - t.age / 0.08;
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = "#fff3a0"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(W / 2, H); ctx.lineTo(t.x, t.y); ctx.stroke();
+        ctx.fillStyle = "#fff"; ctx.beginPath();
+        ctx.arc(t.x, t.y, 10 * a + 4, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // パーティクル
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // マズルフラッシュ
+      if (muzzle > 0) {
+        ctx.globalAlpha = muzzle / 0.07;
+        ctx.fillStyle = "#fff0a0";
+        ctx.beginPath(); ctx.arc(W / 2, H, 60, Math.PI, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      drawReticle();
+
+      // リロード中インジケーター
+      if (reloading) {
+        ctx.fillStyle = "rgba(255,209,102,.95)";
+        ctx.font = "bold " + Math.round(H * 0.04) + "px sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("RELOADING…", W / 2, H * 0.6);
+      } else if (ammo === 0) {
+        ctx.fillStyle = "rgba(255,77,109,.95)";
+        ctx.font = "bold " + Math.round(H * 0.038) + "px sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("🔄 画面の下を狙ってリロード", W / 2, H * 0.6);
+      }
+      if (!handSeen) {
+        ctx.fillStyle = "rgba(255,255,255,.9)";
+        ctx.font = "bold " + Math.round(H * 0.035) + "px sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("👉 指ガンをカメラに向けて", W / 2, H * 0.5);
+      }
+
+      // 被弾フラッシュ
+      if (flashAlpha > 0) {
+        ctx.fillStyle = `rgba(255,30,60,${flashAlpha})`;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    function drawReticle() {
+      if (!hasAim) return;
+      const x = reticleX, y = reticleY - recoil;
+      const color = reloading ? "#ffd166" : ammo === 0 ? "#ff4d6d" : triggerArmed ? "#38f9d7" : "#ffffff";
+      ctx.save();
+      ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.globalAlpha = 0.95;
+      const r = 22;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - r - 10, y); ctx.lineTo(x - r + 6, y);
+      ctx.moveTo(x + r - 6, y); ctx.lineTo(x + r + 10, y);
+      ctx.moveTo(x, y - r - 10); ctx.lineTo(x, y - r + 6);
+      ctx.moveTo(x, y + r - 6); ctx.lineTo(x, y + r + 10);
+      ctx.stroke();
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+  </script>
+</body>
+</html>

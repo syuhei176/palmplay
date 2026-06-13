@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Shuriken Shooter — 指で投げるwebカメラシューティング</title>
+  <style>
+    :root {
+      --bg: #0b0d1a;
+      --accent: #38f9d7;
+      --danger: #ff4d6d;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: radial-gradient(circle at 50% 0%, #1a1f3a 0%, var(--bg) 70%);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #stage { position: relative; width: 100vw; height: 100vh; }
+    #cam { display: none; }
+    #game { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    #hud {
+      position: absolute; top: 0; left: 0; right: 0;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 18px 24px; pointer-events: none;
+      font-variant-numeric: tabular-nums;
+    }
+    #score { font-size: 34px; font-weight: 800; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #score small { font-size: 14px; font-weight: 600; opacity: .7; display: block; letter-spacing: .15em; }
+    #lives { font-size: 30px; letter-spacing: 4px; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #timer {
+      position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+      font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums;
+      text-shadow: 0 2px 12px rgba(0,0,0,.6);
+    }
+    #timer.low { color: var(--danger); animation: pulse .5s ease-in-out infinite; }
+    @keyframes pulse { 50% { transform: translateX(-50%) scale(1.18); } }
+    #combo {
+      position: absolute; top: 84px; left: 50%; transform: translateX(-50%);
+      font-size: 40px; font-weight: 900; color: var(--accent);
+      text-shadow: 0 0 18px rgba(56,249,215,.7); opacity: 0; transition: opacity .2s;
+    }
+
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 22px; background: rgba(8,10,22,.82); backdrop-filter: blur(6px);
+      text-align: center; padding: 24px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      font-size: clamp(40px, 8vw, 84px); font-weight: 900; letter-spacing: .02em;
+      background: linear-gradient(120deg, var(--accent), #6c8cff);
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    #overlay p { font-size: 17px; line-height: 1.8; opacity: .85; max-width: 460px; }
+    #overlay .big { font-size: 64px; font-weight: 900; }
+    .btn {
+      pointer-events: auto; cursor: pointer; border: none; font: inherit;
+      font-weight: 800; font-size: 22px; color: #07140f;
+      background: linear-gradient(120deg, var(--accent), #6c8cff);
+      padding: 16px 44px; border-radius: 999px; box-shadow: 0 8px 30px rgba(56,249,215,.35);
+      transition: transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 38px rgba(56,249,215,.5); }
+    .btn:active { transform: translateY(0); }
+    .spinner {
+      width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.2);
+      border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: var(--danger); font-size: 15px; max-width: 460px; line-height: 1.7; }
+    .hint { font-size: 13px; opacity: .55; letter-spacing: .04em; }
+    .pinchhint { font-size: 15px; opacity: .8; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="score">0<small>SCORE</small></div>
+      <div id="timer">60</div>
+      <div id="lives">❤️❤️❤️</div>
+    </div>
+    <div id="combo"></div>
+
+    <div id="overlay">
+      <h1>SHURIKEN&nbsp;SHOOTER</h1>
+      <p>奥から迫ってくる敵 👹 を手裏剣で撃ち落とせ。<br>
+         <span class="pinchhint">👌 <strong>つまんで → 離す</strong> と、狙った先へ手裏剣が飛ぶ。</span><br>
+         💣 を撃つとライフ -1。敵に接近されてもライフ -1。両手OK！</p>
+      <button class="btn" id="startBtn">スタート</button>
+      <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください</div>
+      <div id="err"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      HandLandmarker,
+      FilesetResolver,
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    const video = document.getElementById("cam");
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const scoreEl = document.getElementById("score");
+    const livesEl = document.getElementById("lives");
+    const comboEl = document.getElementById("combo");
+    const timerEl = document.getElementById("timer");
+
+    // ---- 定数 ----
+    const GAME_TIME = 60;            // 制限時間（秒）
+    const MAX_HANDS = 2;            // 同時に扱うプレイヤー（手）の数
+    const NEAR = 1, DEPTH = 7;      // 遠近の強さ（far の縮小率 = NEAR/(NEAR+DEPTH)）
+    const PINCH_ON = 0.45;          // この比率を下回ったら「つまんだ」
+    const PINCH_OFF = 0.62;         // この比率を上回ったら「離した」（ヒステリシス）
+    const ENEMY_BASE = 130;         // 敵の基準サイズ(z=0)
+    const SHURI_BASE = 90;          // 手裏剣の基準サイズ(z=0)
+    const HAND_COLORS = ["#38f9d7", "#ff9f43"];
+    const ENEMIES = ["👹", "👺", "👻", "🐗", "🦇"];
+    const BOMB = "💣";
+
+    let handLandmarker = null;
+    let state = "idle";
+    let enemies = [];
+    let shurikens = [];
+    let particles = [];
+    let rings = [];                 // 投擲時の波紋エフェクト
+    const handState = Array.from({ length: MAX_HANDS }, () => ({
+      present: false, pinching: false, charge: 0, cooldown: 0,
+      aimX: 0, aimY: 0, chargeX: 0, chargeY: 0, lm: null,
+    }));
+    let lastHands = [];
+
+    let score = 0, lives = 3, combo = 0, comboTimer = 0;
+    let spawnTimer = 0, elapsed = 0, timeLeft = GAME_TIME, lastSec = -1;
+    let lastTime = 0, lastVideoTime = -1, spin = 0, flashAlpha = 0;
+
+    let VP = { x: 0, y: 0 };
+
+    // ---- モデル / カメラ ----
+    async function loadModel() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: MAX_HANDS,
+      });
+    }
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+      VP = { x: canvas.width / 2, y: canvas.height * 0.4 };
+    }
+
+    startBtn.addEventListener("click", async () => {
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      try {
+        await startCamera();
+        if (!handLandmarker) await loadModel();
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        showError(e);
+      }
+    });
+
+    function showError(e) {
+      overlay.classList.remove("hidden");
+      const msg =
+        e?.name === "NotAllowedError"
+          ? "カメラの使用が許可されませんでした。ブラウザのカメラ設定から許可してください。"
+          : "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+      overlay.innerHTML =
+        '<h1>SHURIKEN&nbsp;SHOOTER</h1><div id="err"></div><button class="btn" id="retry">もう一度</button>';
+      overlay.querySelector("#err").textContent = msg;
+      overlay.querySelector("#retry").addEventListener("click", () => location.reload());
+    }
+
+    function resetGame() {
+      enemies = []; shurikens = []; particles = []; rings = [];
+      for (const st of handState) { st.pinching = false; st.charge = 0; st.cooldown = 0; }
+      score = 0; lives = 3; combo = 0; comboTimer = 0;
+      spawnTimer = 0; elapsed = 0; timeLeft = GAME_TIME; lastSec = -1;
+      updateHud(); updateTimer();
+    }
+
+    function updateHud() {
+      scoreEl.innerHTML = score + "<small>SCORE</small>";
+      livesEl.textContent = "❤️".repeat(Math.max(0, lives)) + "🖤".repeat(Math.max(0, 3 - lives));
+    }
+    function updateTimer() {
+      const s = Math.max(0, Math.ceil(timeLeft));
+      if (s !== lastSec) {
+        lastSec = s;
+        timerEl.textContent = s;
+        timerEl.classList.toggle("low", s <= 10);
+      }
+    }
+
+    // ---- 遠近投影：奥(z=1)ほど消失点に寄って小さく、手前(z=0)で本来の位置・原寸 ----
+    function project(ax, ay, z) {
+      const scale = NEAR / (NEAR + z * DEPTH);
+      return { x: VP.x + (ax - VP.x) * scale, y: VP.y + (ay - VP.y) * scale, scale };
+    }
+
+    // ---- 敵の出現（奥から手前へ）----
+    function spawnEnemy() {
+      const isBomb = Math.random() < 0.18;
+      const ax = canvas.width * (0.12 + Math.random() * 0.76);
+      const ay = canvas.height * (0.18 + Math.random() * 0.64);
+      enemies.push({
+        ax, ay,
+        z: 1,
+        zSpeed: 0.14 + elapsed * 0.0035 + Math.random() * 0.05,
+        type: isBomb ? "bomb" : "enemy",
+        emoji: isBomb ? BOMB : ENEMIES[(Math.random() * ENEMIES.length) | 0],
+        rot: Math.random() * Math.PI * 2,
+        vr: (Math.random() - 0.5) * 2,
+      });
+    }
+
+    function throwShuriken(x, y) {
+      shurikens.push({ ax: x, ay: y, z: 0, rot: 0 });
+      rings.push({ x, y, r: 10, life: 0.4, age: 0 });
+    }
+
+    function splat(x, y, color, n = 14) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 80 + Math.random() * 280;
+        particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 80,
+          life: 0.5 + Math.random() * 0.4, age: 0, color, size: 3 + Math.random() * 7 });
+      }
+    }
+
+    function hitEnemy(e, idx) {
+      const p = project(e.ax, e.ay, e.z);
+      if (e.type === "bomb") {
+        lives--; combo = 0; flash(); splat(p.x, p.y, "#ff4d6d", 22);
+        if (lives <= 0) gameOver();
+      } else {
+        combo++; comboTimer = 1.3;
+        score += 10 + Math.max(0, combo - 1) * 5;
+        splat(p.x, p.y, "#ffd166", 16);
+        if (combo >= 2) showCombo(combo);
+      }
+      enemies.splice(idx, 1);
+      updateHud();
+    }
+
+    function enemyReached(e, idx) {
+      if (e.type === "enemy") {
+        lives--; combo = 0; flash();
+        if (lives <= 0) gameOver();
+        updateHud();
+      }
+      enemies.splice(idx, 1); // 爆弾は素通り（撃たなければ無害）
+    }
+
+    function flash() { flashAlpha = 0.6; }
+    function showCombo(c) {
+      comboEl.textContent = c + " COMBO!";
+      comboEl.style.opacity = "1";
+      clearTimeout(showCombo._t);
+      showCombo._t = setTimeout(() => (comboEl.style.opacity = "0"), 800);
+    }
+
+    function gameOver(title = "GAME OVER") {
+      state = "over";
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        "<h1>" + title + '</h1><p>SCORE</p><div class="big">' + score +
+        '</div><button class="btn" id="again">もう一度</button>';
+      overlay.querySelector("#again").addEventListener("click", () => {
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      });
+    }
+
+    // ---- 手検出（照準＝親指と人差し指の中点、ピンチ＝指先間距離/手のひら長）----
+    function detectHands(nowMs) {
+      if (video.currentTime === lastVideoTime) return lastHands;
+      lastVideoTime = video.currentTime;
+      const out = [];
+      const res = handLandmarker.detectForVideo(video, nowMs);
+      if (res?.landmarks) {
+        for (const lm of res.landmarks) {
+          const thumb = lm[4], idx = lm[8], wrist = lm[0], mmcp = lm[9];
+          const mx = (thumb.x + idx.x) / 2, my = (thumb.y + idx.y) / 2;
+          const dTip = Math.hypot(thumb.x - idx.x, thumb.y - idx.y);
+          const ref = Math.hypot(wrist.x - mmcp.x, wrist.y - mmcp.y) || 1e-4;
+          out.push({
+            aimX: canvas.width - mx * canvas.width, // 鏡像に合わせて反転
+            aimY: my * canvas.height,
+            ratio: dTip / ref,
+            lm,
+          });
+        }
+      }
+      lastHands = out;
+      return out;
+    }
+
+    // ---- メインループ ----
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+      elapsed += dt;
+      spin += dt * 10;
+
+      // 制限時間
+      timeLeft -= dt;
+      updateTimer();
+      if (timeLeft <= 0) { gameOver("TIME UP!"); return; }
+
+      // 手の検出 & ピンチ→リリースで発射
+      const hands = detectHands(now);
+      for (let h = 0; h < MAX_HANDS; h++) {
+        const st = handState[h];
+        const hand = hands[h];
+        if (st.cooldown > 0) st.cooldown -= dt;
+        if (hand) {
+          st.present = true; st.lm = hand.lm;
+          st.aimX = hand.aimX; st.aimY = hand.aimY;
+          const wasPinching = st.pinching;
+          if (st.pinching) { if (hand.ratio > PINCH_OFF) st.pinching = false; }
+          else { if (hand.ratio < PINCH_ON) st.pinching = true; }
+          if (st.pinching) { st.charge = Math.min(1, st.charge + dt * 2.5); st.chargeX = hand.aimX; st.chargeY = hand.aimY; }
+          if (wasPinching && !st.pinching && st.cooldown <= 0) {
+            throwShuriken(st.chargeX, st.chargeY);
+            st.cooldown = 0.15; st.charge = 0;
+          }
+          if (!st.pinching) st.charge = Math.max(0, st.charge - dt * 3);
+        } else {
+          st.present = false; st.pinching = false; st.charge = 0; st.lm = null;
+        }
+      }
+
+      // 敵スポーン（時間で難化）
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawnEnemy();
+        spawnTimer = Math.max(0.5, 1.3 - elapsed * 0.014);
+      }
+
+      // 敵を手前へ
+      for (const e of enemies) { e.z -= e.zSpeed * dt; e.rot += e.vr * dt; }
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        if (enemies[i].z <= 0) enemyReached(enemies[i], i);
+      }
+
+      // 手裏剣を奥へ + 当たり判定
+      for (const s of shurikens) { s.z += 2.6 * dt; s.rot += dt * 22; }
+      for (let si = shurikens.length - 1; si >= 0; si--) {
+        const s = shurikens[si];
+        if (s.z > 1.1) { shurikens.splice(si, 1); continue; }
+        const sp = project(s.ax, s.ay, s.z);
+        const sr = SHURI_BASE * sp.scale * 0.5;
+        let hit = false;
+        for (let ei = enemies.length - 1; ei >= 0; ei--) {
+          const e = enemies[ei];
+          if (Math.abs(e.z - s.z) > 0.2) continue; // 同じくらいの深さのときだけ
+          const ep = project(e.ax, e.ay, e.z);
+          const er = ENEMY_BASE * ep.scale * 0.45;
+          if (Math.hypot(sp.x - ep.x, sp.y - ep.y) < sr + er) {
+            hitEnemy(e, ei); hit = true; break;
+          }
+        }
+        if (hit) shurikens.splice(si, 1);
+      }
+
+      // エフェクト更新
+      for (const p of particles) { p.age += dt; p.vy += 700 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
+      particles = particles.filter((p) => p.age < p.life);
+      for (const r of rings) { r.age += dt; r.r += 220 * dt; }
+      rings = rings.filter((r) => r.age < r.life);
+
+      if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 0; }
+      if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt * 1.5);
+
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    // ---- 描画 ----
+    function render() {
+      // ミラーしたカメラ映像 + ベール
+      ctx.save();
+      ctx.translate(canvas.width, 0); ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+      ctx.fillStyle = "rgba(8,10,22,0.4)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 敵と手裏剣を奥行き順（z 大きい＝奥 から先に）に描画
+      const drawList = [];
+      for (const e of enemies) drawList.push({ z: e.z, kind: "enemy", o: e });
+      for (const s of shurikens) drawList.push({ z: s.z, kind: "shuriken", o: s });
+      drawList.sort((a, b) => b.z - a.z);
+
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      for (const d of drawList) {
+        const o = d.o;
+        const p = project(o.ax, o.ay, o.z);
+        if (d.kind === "enemy") {
+          ctx.save();
+          ctx.translate(p.x, p.y); ctx.rotate(o.rot * 0.15);
+          ctx.font = ENEMY_BASE * p.scale + "px serif";
+          ctx.fillText(o.emoji, 0, 0);
+          ctx.restore();
+        } else {
+          drawShuriken(p.x, p.y, SHURI_BASE * p.scale, o.rot, "#dfe6e9");
+        }
+      }
+
+      // 投擲の波紋
+      for (const r of rings) {
+        ctx.globalAlpha = Math.max(0, 1 - r.age / r.life);
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      // パーティクル
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // 照準（手ごと）
+      for (let h = 0; h < MAX_HANDS; h++) {
+        const st = handState[h];
+        if (!st.present) continue;
+        drawReticle(st, HAND_COLORS[h % HAND_COLORS.length]);
+      }
+
+      // 被弾フラッシュ
+      if (flashAlpha > 0) {
+        ctx.fillStyle = `rgba(255,77,109,${flashAlpha})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    function drawReticle(st, color) {
+      const x = st.aimX, y = st.aimY;
+      ctx.save();
+      ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.globalAlpha = 0.9;
+      const ring = 26 + st.charge * 8;
+      ctx.beginPath(); ctx.arc(x, y, ring, 0, Math.PI * 2); ctx.stroke();
+      // 十字
+      ctx.beginPath();
+      ctx.moveTo(x - ring - 8, y); ctx.lineTo(x - ring + 6, y);
+      ctx.moveTo(x + ring - 6, y); ctx.lineTo(x + ring + 8, y);
+      ctx.moveTo(x, y - ring - 8); ctx.lineTo(x, y - ring + 6);
+      ctx.moveTo(x, y + ring - 6); ctx.lineTo(x, y + ring + 8);
+      ctx.stroke();
+      ctx.restore();
+      // チャージ中は手裏剣が回りながら大きくなる
+      if (st.charge > 0.02) {
+        const sz = 14 + st.charge * 26;
+        ctx.save();
+        ctx.shadowColor = color; ctx.shadowBlur = 16;
+        drawShuriken(x, y, sz, spin * 2, "#fff");
+        ctx.restore();
+      }
+    }
+
+    // 4枚刃の手裏剣を描く
+    function drawShuriken(x, y, size, rot, color) {
+      if (size < 3) return;
+      ctx.save();
+      ctx.translate(x, y); ctx.rotate(rot);
+      ctx.fillStyle = color;
+      ctx.strokeStyle = "rgba(0,0,0,0.45)";
+      ctx.lineWidth = Math.max(1, size * 0.04);
+      ctx.lineJoin = "round";
+      const r = size, ri = size * 0.3;
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const a = i * Math.PI / 2;
+        ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+        const a2 = a + Math.PI / 4;
+        ctx.lineTo(Math.cos(a2) * ri, Math.sin(a2) * ri);
+      }
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 0, size * 0.16, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(10,12,26,0.92)"; ctx.fill();
+      ctx.restore();
+    }
+  </script>
+</body>
+</html>

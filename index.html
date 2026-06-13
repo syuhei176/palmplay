@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Hand Slash — 指で斬るwebカメラゲーム</title>
+  <style>
+    :root {
+      --bg: #0b0d1a;
+      --accent: #38f9d7;
+      --danger: #ff4d6d;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: radial-gradient(circle at 50% 0%, #1a1f3a 0%, var(--bg) 70%);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #stage {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    /* video は検出用。画面には canvas を表示する */
+    #cam { display: none; }
+    #game {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    /* HUD */
+    #hud {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 18px 24px;
+      pointer-events: none;
+      font-variant-numeric: tabular-nums;
+    }
+    #score { font-size: 34px; font-weight: 800; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #score small { font-size: 14px; font-weight: 600; opacity: .7; display: block; letter-spacing: .15em; }
+    #lives { font-size: 30px; letter-spacing: 4px; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #timer {
+      position: absolute;
+      top: 16px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 40px; font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 2px 12px rgba(0,0,0,.6);
+    }
+    #timer.low { color: var(--danger); animation: pulse .5s ease-in-out infinite; }
+    @keyframes pulse { 50% { transform: translateX(-50%) scale(1.18); } }
+    #combo {
+      position: absolute;
+      top: 84px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 40px; font-weight: 900;
+      color: var(--accent);
+      text-shadow: 0 0 18px rgba(56,249,215,.7);
+      opacity: 0;
+      transition: opacity .2s;
+    }
+
+    /* オーバーレイ（スタート/ゲームオーバー/読込） */
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 22px;
+      background: rgba(8,10,22,.82);
+      backdrop-filter: blur(6px);
+      text-align: center;
+      padding: 24px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      font-size: clamp(40px, 8vw, 84px);
+      font-weight: 900;
+      letter-spacing: .02em;
+      background: linear-gradient(120deg, var(--accent), #43e97b);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    #overlay p { font-size: 17px; line-height: 1.8; opacity: .85; max-width: 440px; }
+    #overlay .big { font-size: 64px; font-weight: 900; }
+    .btn {
+      pointer-events: auto;
+      cursor: pointer;
+      border: none;
+      font: inherit;
+      font-weight: 800;
+      font-size: 22px;
+      color: #07140f;
+      background: linear-gradient(120deg, var(--accent), #43e97b);
+      padding: 16px 44px;
+      border-radius: 999px;
+      box-shadow: 0 8px 30px rgba(56,249,215,.35);
+      transition: transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 38px rgba(56,249,215,.5); }
+    .btn:active { transform: translateY(0); }
+    .spinner {
+      width: 46px; height: 46px;
+      border: 4px solid rgba(255,255,255,.2);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: var(--danger); font-size: 15px; max-width: 460px; line-height: 1.7; }
+    .hint { font-size: 13px; opacity: .55; letter-spacing: .04em; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="score">0<small>SCORE</small></div>
+      <div id="timer">60</div>
+      <div id="lives">❤️❤️❤️</div>
+    </div>
+    <div id="combo"></div>
+
+    <div id="overlay">
+      <h1>HAND&nbsp;SLASH</h1>
+      <p>webカメラに映った<strong>人差し指</strong>を振って、飛んでくる果物を斬ろう。<br>💣 を斬るとライフが減ります。最大4手まで検出、複数人で協力プレイOK！</p>
+      <button class="btn" id="startBtn">スタート</button>
+      <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください</div>
+      <div id="err"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      HandLandmarker,
+      FilesetResolver,
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    const video = document.getElementById("cam");
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const errEl = document.getElementById("err");
+    const scoreEl = document.getElementById("score");
+    const livesEl = document.getElementById("lives");
+    const comboEl = document.getElementById("combo");
+    const timerEl = document.getElementById("timer");
+
+    const FRUITS = ["🍉", "🍊", "🍎", "🍇", "🍓", "🍍", "🥝", "🍑"];
+    const BOMB = "💣";
+    const GAME_TIME = 60; // 制限時間（秒）
+    const MAX_HANDS = 4; // 同時に検出する手の数（人数ぶん）
+    const TRAIL_COLORS = ["#38f9d7", "#ff9f43", "#a78bfa", "#feca57"]; // 手ごとの刃の色
+
+    let handLandmarker = null;
+    let state = "idle"; // idle | playing | over
+    let objects = [];
+    let particles = [];
+    const trails = Array.from({ length: MAX_HANDS }, () => []); // 手ごとの指先の軌跡
+    let score = 0;
+    let lives = 3;
+    let combo = 0;
+    let comboTimer = 0;
+    let spawnTimer = 0;
+    let elapsed = 0;
+    let timeLeft = GAME_TIME;
+    let lastSec = -1;
+    let lastTime = 0;
+    let lastVideoTime = -1;
+
+    // ---- モデル読み込み ----
+    async function loadModel() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: MAX_HANDS,
+      });
+    }
+
+    // ---- カメラ起動 ----
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+    }
+
+    // ---- スタート ----
+    startBtn.addEventListener("click", async () => {
+      errEl.textContent = "";
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      try {
+        await startCamera();
+        if (!handLandmarker) await loadModel();
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        showError(e);
+      }
+    });
+
+    function showError(e) {
+      overlay.classList.remove("hidden");
+      const msg =
+        e?.name === "NotAllowedError"
+          ? "カメラの使用が許可されませんでした。ブラウザのアドレスバーのカメラ設定から許可してください。"
+          : "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+      overlay.innerHTML =
+        '<h1>HAND&nbsp;SLASH</h1><div id="err"></div><button class="btn" id="startBtn2">もう一度</button>';
+      overlay.querySelector("#err").textContent = msg;
+      overlay.querySelector("#startBtn2").addEventListener("click", () => location.reload());
+    }
+
+    function resetGame() {
+      objects = [];
+      particles = [];
+      for (const tr of trails) tr.length = 0;
+      score = 0;
+      lives = 3;
+      combo = 0;
+      comboTimer = 0;
+      spawnTimer = 0;
+      elapsed = 0;
+      timeLeft = GAME_TIME;
+      lastSec = -1;
+      updateHud();
+      updateTimer();
+    }
+
+    function updateHud() {
+      scoreEl.innerHTML = score + "<small>SCORE</small>";
+      livesEl.textContent = "❤️".repeat(Math.max(0, lives)) + "🖤".repeat(Math.max(0, 3 - lives));
+    }
+
+    function updateTimer() {
+      const s = Math.max(0, Math.ceil(timeLeft));
+      if (s !== lastSec) {
+        lastSec = s;
+        timerEl.textContent = s;
+        timerEl.classList.toggle("low", s <= 10);
+      }
+    }
+
+    // ---- オブジェクト生成（下から放り投げる）----
+    function spawnObject() {
+      const isBomb = Math.random() < 0.16;
+      const fromLeft = Math.random() < 0.5;
+      const x = fromLeft ? canvas.width * (0.1 + Math.random() * 0.3) : canvas.width * (0.6 + Math.random() * 0.3);
+      const targetUp = canvas.height * (0.55 + Math.random() * 0.3); // どれだけ高く上がるか
+      const vy = -Math.sqrt(2 * GRAVITY * targetUp);
+      const vx = (fromLeft ? 1 : -1) * (60 + Math.random() * 140);
+      objects.push({
+        x,
+        y: canvas.height + 50,
+        vx,
+        vy,
+        type: isBomb ? "bomb" : "fruit",
+        emoji: isBomb ? BOMB : FRUITS[(Math.random() * FRUITS.length) | 0],
+        radius: 46,
+        rot: Math.random() * Math.PI * 2,
+        vr: (Math.random() - 0.5) * 4,
+        sliced: false,
+      });
+    }
+
+    const GRAVITY = 1100; // px/s^2
+    const SLICE_FADE = 0.35; // 斬った後に消えるまでの秒数
+
+    // ---- スプラッシュ粒子 ----
+    function splat(x, y, color, n = 14) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 100 + Math.random() * 320;
+        particles.push({
+          x, y,
+          vx: Math.cos(a) * s,
+          vy: Math.sin(a) * s - 120,
+          life: 0.6 + Math.random() * 0.4,
+          age: 0,
+          color,
+          size: 4 + Math.random() * 8,
+        });
+      }
+    }
+
+    // ---- 点と線分の距離（斬撃判定）----
+    function segDist(px, py, ax, ay, bx, by) {
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const cx = ax + t * dx, cy = ay + t * dy;
+      return Math.hypot(px - cx, py - cy);
+    }
+
+    function onSlice(obj) {
+      obj.sliced = true;
+      obj.sliceAge = 0;
+      if (obj.type === "bomb") {
+        lives--;
+        combo = 0;
+        splat(obj.x, obj.y, "#ff4d6d", 24);
+        flash();
+        if (lives <= 0) gameOver();
+      } else {
+        combo++;
+        comboTimer = 1.3;
+        const gain = 10 + Math.max(0, combo - 1) * 5;
+        score += gain;
+        splat(obj.x, obj.y, "#ffd166", 16);
+        if (combo >= 2) showCombo(combo);
+      }
+      updateHud();
+    }
+
+    let flashAlpha = 0;
+    function flash() { flashAlpha = 0.6; }
+
+    function showCombo(c) {
+      comboEl.textContent = c + " COMBO!";
+      comboEl.style.opacity = "1";
+      clearTimeout(showCombo._t);
+      showCombo._t = setTimeout(() => (comboEl.style.opacity = "0"), 800);
+    }
+
+    function gameOver(title = "GAME OVER") {
+      state = "over";
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        "<h1>" + title + '</h1><p>SCORE</p><div class="big">' +
+        score +
+        '</div><button class="btn" id="again">もう一度</button>';
+      overlay.querySelector("#again").addEventListener("click", () => {
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      });
+    }
+
+    // ---- 手検出 → 指先座標（画面はミラー表示）----
+    function detectFingertips(nowMs) {
+      const tips = [];
+      if (video.currentTime === lastVideoTime) return tips;
+      lastVideoTime = video.currentTime;
+      const res = handLandmarker.detectForVideo(video, nowMs);
+      if (res?.landmarks) {
+        for (const lm of res.landmarks) {
+          const t = lm[8]; // 人差し指の先端
+          tips.push({
+            x: canvas.width - t.x * canvas.width, // 鏡像に合わせて反転
+            y: t.y * canvas.height,
+            landmarks: lm,
+          });
+        }
+      }
+      return tips;
+    }
+
+    // ---- メインループ ----
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+      elapsed += dt;
+
+      // 制限時間のカウントダウン
+      timeLeft -= dt;
+      updateTimer();
+      if (timeLeft <= 0) {
+        gameOver("TIME UP!");
+        return;
+      }
+
+      // 1) 手検出
+      const tips = detectFingertips(now);
+
+      // 軌跡を更新（最大 MAX_HANDS 手）
+      for (let h = 0; h < MAX_HANDS; h++) {
+        const tip = tips[h];
+        const tr = trails[h];
+        if (tip) {
+          tr.push({ x: tip.x, y: tip.y, t: now });
+        }
+        // 古い点を捨てる（150ms）
+        while (tr.length && now - tr[0].t > 150) tr.shift();
+      }
+
+      // 2) スポーン（時間経過で難易度上昇）
+      spawnTimer -= dt;
+      const interval = Math.max(0.45, 1.1 - elapsed * 0.012);
+      if (spawnTimer <= 0) {
+        spawnObject();
+        if (elapsed > 20 && Math.random() < 0.4) spawnObject();
+        spawnTimer = interval;
+      }
+
+      // 3) 物理更新（斬った後も飛び続けつつフェードして消える）
+      for (const o of objects) {
+        o.vy += GRAVITY * dt;
+        o.x += o.vx * dt;
+        o.y += o.vy * dt;
+        o.rot += o.vr * dt;
+        if (o.sliced) o.sliceAge += dt;
+      }
+      objects = objects.filter(
+        (o) => (o.y < canvas.height + 120 || o.vy < 0) && (!o.sliced || o.sliceAge < SLICE_FADE)
+      );
+
+      // 4) 斬撃判定（各手の最新セグメント）
+      for (let h = 0; h < MAX_HANDS; h++) {
+        const tr = trails[h];
+        if (tr.length < 2) continue;
+        const p1 = tr[tr.length - 2];
+        const p2 = tr[tr.length - 1];
+        const speed = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        if (speed < 12) continue; // ある程度の速さで振らないと斬れない
+        for (const o of objects) {
+          if (o.sliced) continue;
+          if (segDist(o.x, o.y, p1.x, p1.y, p2.x, p2.y) < o.radius) {
+            onSlice(o);
+          }
+        }
+      }
+
+      // 5) パーティクル更新
+      for (const p of particles) {
+        p.age += dt;
+        p.vy += 900 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+
+      // コンボのリセット
+      if (comboTimer > 0) {
+        comboTimer -= dt;
+        if (comboTimer <= 0) combo = 0;
+      }
+      if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt * 1.5);
+
+      render(tips);
+      requestAnimationFrame(loop);
+    }
+
+    // ---- 描画 ----
+    function render(tips) {
+      // 背景にミラーしたカメラ映像
+      ctx.save();
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+      // 暗めのベール
+      ctx.fillStyle = "rgba(8,10,22,0.35)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // オブジェクト
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (const o of objects) {
+        ctx.save();
+        ctx.translate(o.x, o.y);
+        ctx.rotate(o.rot);
+        ctx.font = "80px serif";
+        if (o.sliced) {
+          const k = o.sliceAge / SLICE_FADE; // 0→1
+          ctx.globalAlpha = Math.max(0, 1 - k);
+          ctx.scale(1 + k * 0.8, 1 + k * 0.8); // 弾けて広がる
+        }
+        ctx.fillText(o.emoji, 0, 0);
+        ctx.restore();
+      }
+
+      // パーティクル
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // 手のスケルトン（薄く）と指先の光る軌跡（手ごとに色分け）
+      for (let h = 0; h < MAX_HANDS; h++) {
+        const color = TRAIL_COLORS[h % TRAIL_COLORS.length];
+        const tip = tips[h];
+        if (tip) drawHand(tip.landmarks, color);
+        drawTrail(trails[h], color);
+      }
+
+      // 被弾フラッシュ
+      if (flashAlpha > 0) {
+        ctx.fillStyle = `rgba(255,77,109,${flashAlpha})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    const HAND_CONNECTIONS = [
+      [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+      [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17],
+    ];
+    function drawHand(lm, color) {
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.3;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (const [a, b] of HAND_CONNECTIONS) {
+        const pa = lm[a], pb = lm[b];
+        ctx.moveTo(canvas.width - pa.x * canvas.width, pa.y * canvas.height);
+        ctx.lineTo(canvas.width - pb.x * canvas.width, pb.y * canvas.height);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawTrail(tr, color) {
+      if (tr.length < 2) return;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 18;
+      for (let i = 1; i < tr.length; i++) {
+        ctx.beginPath();
+        ctx.lineWidth = (i / tr.length) * 16 + 2;
+        ctx.moveTo(tr[i - 1].x, tr[i - 1].y);
+        ctx.lineTo(tr[i].x, tr[i].y);
+        ctx.stroke();
+      }
+      // 指先のドット
+      const last = tr[tr.length - 1];
+      ctx.beginPath();
+      ctx.fillStyle = "#fff";
+      ctx.arc(last.x, last.y, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  </script>
+</body>
+</html>

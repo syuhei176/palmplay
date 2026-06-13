@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Hand Cockpit ✈️ — 操縦桿とスロットルを握って離陸するwebカメラフライト</title>
+  <style>
+    :root { --bg: #06080f; --accent: #38f9d7; --amber: #ffb347; --danger: #ff4d6d; --hud: #6dffba; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden; -webkit-user-select: none; user-select: none;
+    }
+    #stage { position: relative; width: 100vw; height: 100vh; }
+    #cam { display: none; }
+    #gl, #hud { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #hud { pointer-events: none; }
+
+    #overlay {
+      position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 22px;
+      background: radial-gradient(circle at 50% 30%, #16203a 0%, #06080f 75%);
+      text-align: center; padding: 24px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      font-size: clamp(40px, 8vw, 88px); font-weight: 900; letter-spacing: .02em; line-height: 1.05;
+      background: linear-gradient(120deg, var(--accent), var(--amber));
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    #overlay p { font-size: 17px; line-height: 1.85; opacity: .9; max-width: 520px; }
+    #overlay .keys { font-size: 14px; opacity: .6; }
+    #overlay .big { font-size: 60px; font-weight: 900; }
+    #overlay .stats { display: flex; gap: 30px; font-variant-numeric: tabular-nums; }
+    #overlay .stats div { font-size: 14px; opacity: .75; }
+    #overlay .stats b { display: block; font-size: 30px; font-weight: 900; opacity: 1; color: var(--accent); }
+    .lever-legend { display: flex; gap: 28px; flex-wrap: wrap; justify-content: center; }
+    .lever-legend > div { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+      border-radius: 14px; padding: 14px 18px; max-width: 230px; font-size: 14px; line-height: 1.6; }
+    .lever-legend b { color: var(--accent); }
+    .btn {
+      pointer-events: auto; cursor: pointer; border: none; font: inherit; font-weight: 800; font-size: 22px;
+      color: #07140f; background: linear-gradient(120deg, var(--accent), var(--amber));
+      padding: 16px 46px; border-radius: 999px; box-shadow: 0 8px 30px rgba(56,249,215,.35);
+      transition: transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .spinner {
+      width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.2);
+      border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: var(--danger); font-size: 15px; max-width: 460px; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline></video>
+    <canvas id="gl"></canvas>
+    <canvas id="hud"></canvas>
+
+    <div id="overlay">
+      <h1>HAND&nbsp;COCKPIT&nbsp;✈️</h1>
+      <p>両手で<b>スロットル</b>と<b>操縦桿</b>を握って、飛行機を離陸させろ。</p>
+      <div class="lever-legend">
+        <div>🛫 <b>左手＝スロットル</b><br>画面左の<b>レバーを✊握って</b> 上げる＝加速 / 下げる＝減速。<br>離すとその位置で保持。</div>
+        <div>🕹️ <b>両手＝操縦桿</b><br><b>✊両手で握ってステアリングのように傾け＝旋回</b>、<b>手前に引く＝機首上げ</b> / 押す＝機首下げ。<br>片手でも操縦可。離すと中立。</div>
+      </div>
+      <p>画面に映る<b>あなたの手(✊/🖐)</b>でコックピットを操作。<br>フルスロットルで加速 → <b>Vr</b> 超で操縦桿を引いて <b>ROTATE</b> → 高度150mで離陸 → あとは <b>自由飛行</b>！失速注意。</p>
+      <button class="btn" id="startBtn">フライト開始</button>
+      <p class="keys">カメラが無い時はキーボードでも操作可：W/S＝スロットル, ↑/↓＝ピッチ, ←/→＝バンク</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+    import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    const video = document.getElementById("cam");
+    const glCanvas = document.getElementById("gl");
+    const hud = document.getElementById("hud");
+    const hctx = hud.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+
+    // ================= 飛行モデル定数 =================
+    const G = 9.81;            // 重力加速度
+    const THRUST_MAX = 11;     // フルスロットルの推力加速度
+    const DRAG_K = 0.0012;     // 抗力 = DRAG_K * v^2
+    const ROLL_FRICTION = 0.6; // 地上の転がり抵抗
+    const LIFT_K = 0.0022;     // 揚力係数スケール
+    const VR = 62;             // 機首上げ開始速度(離陸決心速度) m/s
+    const RUNWAY_LEN = 1600;   // 滑走路長 m
+    const EYE_HEIGHT = 3.2;    // コックピット視点高さ m
+    const TARGET_ALT = 150;    // 離陸成功となる高度 m
+    const AOA_CRIT = 15;       // 失速する迎角(度)
+    const CMD_PITCH_UP = 12;   // 操縦桿フル引きで指示する機首上げ姿勢(失速手前に抑える)
+    const CMD_PITCH_DN = 10;   // フル押しで指示する機首下げ姿勢
+
+    // ================= 状態 =================
+    let handLandmarker = null;
+    let state = "idle";
+    let camReady = false;              // カメラ＋手検出が使えるか
+    let three = null;                  // {scene,camera,renderer,...}
+    let lastTime = 0, lastVideoTime = -1, lastHands = [];
+
+    // 機体状態
+    let speed, alt, vspeed, pitch, airborne, stalled, throttle, elevator;
+    let heading, bank, bankTarget, posX, posZ, everAirborne, freeFlight;
+    let maxSpeed, maxAlt, tStart, callout, calloutT, shake;
+
+    // レバー(正規化スクリーン縦位置 y: 0=上, 1=下)
+    const throttleLever = { pos: 0.78, min: 0.30, max: 0.78, grip: false };
+    const yoke = { grip: false, mode: "none", refX: 0.5, hands: [] }; // mode: none/one/both
+    const YOKE_CENTER = 0.5;   // 手がこの高さ＝操縦桿中立
+    const YOKE_HALF = 0.25;    // 手がこの幅だけ中心から離れると最大舵(ピッチ)
+    const ROLL_HALF = 0.08;    // 片手操縦時:掴んだ位置から左右にこの幅で最大バンク
+    const MAX_WHEEL_ANGLE = 0.55; // 両手操縦時:両手を結ぶ線がこの角度で最大バンク
+    const THR_ZONE_X = 0.27;   // この x より左の握り手＝スロットル、右＝操縦桿
+    const MAX_BANK = 46 * Math.PI / 180; // 最大バンク角
+    const TURN_GAIN = 1.7;     // 旋回の効きを強める係数
+    const keys = {};
+
+    // ================= 3Dシーン構築 =================
+    function buildScene() {
+      const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true });
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0xbfe0ff, 700, 3800);
+      const camera = new THREE.PerspectiveCamera(72, 1, 0.5, 7000);
+      camera.rotation.order = "YXZ"; // yaw→pitch→roll の順で姿勢を合成
+
+      // --- 空(グラデーションドーム) ---
+      const skyMat = new THREE.ShaderMaterial({
+        side: THREE.BackSide, depthWrite: false,
+        uniforms: { top: { value: new THREE.Color(0x2a6bd0) }, bot: { value: new THREE.Color(0xcfeaff) } },
+        vertexShader: "varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0);}",
+        fragmentShader: "uniform vec3 top; uniform vec3 bot; varying vec3 vP; void main(){ float h = clamp(normalize(vP).y*1.4+0.15,0.0,1.0); gl_FragColor = vec4(mix(bot,top,h),1.0);}"
+      });
+      scene.add(new THREE.Mesh(new THREE.SphereGeometry(5000, 32, 16), skyMat));
+
+      // --- ライト ---
+      scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x4a5a3a, 1.0));
+      const sun = new THREE.DirectionalLight(0xfff2d6, 1.4);
+      sun.position.set(-600, 900, 500);
+      scene.add(sun);
+
+      // --- 地面 ---
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(12000, 12000),
+        new THREE.MeshLambertMaterial({ color: 0x4f7a3a })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.z = -RUNWAY_LEN / 2;
+      scene.add(ground);
+
+      // --- 滑走路 ---
+      const rw = new THREE.Mesh(
+        new THREE.PlaneGeometry(50, RUNWAY_LEN + 300),
+        new THREE.MeshLambertMaterial({ color: 0x32363d })
+      );
+      rw.rotation.x = -Math.PI / 2;
+      rw.position.set(0, 0.02, -RUNWAY_LEN / 2 + 60);
+      scene.add(rw);
+
+      // --- 滑走路の白線(両端 + センターダッシュ) ---
+      const white = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      for (const ex of [-23, 23]) {
+        const edge = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.05, RUNWAY_LEN + 200), white);
+        edge.position.set(ex, 0.05, -RUNWAY_LEN / 2 + 60);
+        scene.add(edge);
+      }
+      for (let z = 0; z > -RUNWAY_LEN; z -= 26) {
+        const dash = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.05, 8), white);
+        dash.position.set(0, 0.05, z - 20);
+        scene.add(dash);
+      }
+      // スレッショルドマーク(始点のピアノキー)
+      for (let i = -3; i <= 3; i++) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.05, 14), white);
+        bar.position.set(i * 5, 0.05, -8);
+        scene.add(bar);
+      }
+
+      // --- 滑走路灯/標識 + 沿道の景観 ---
+      const treeMat = new THREE.MeshLambertMaterial({ color: 0x2f6b34 });
+      const buildMat = new THREE.MeshLambertMaterial({ color: 0x8a8f9c });
+      for (let z = -40; z > -RUNWAY_LEN - 600; z -= 60) {
+        for (const side of [-1, 1]) {
+          const x = side * (40 + Math.random() * 160);
+          if (Math.random() < 0.5) {
+            const h = 12 + Math.random() * 50;
+            const b = new THREE.Mesh(new THREE.BoxGeometry(10 + Math.random() * 20, h, 10 + Math.random() * 20), buildMat);
+            b.position.set(x, h / 2, z);
+            scene.add(b);
+          } else {
+            const h = 8 + Math.random() * 14;
+            const t = new THREE.Mesh(new THREE.ConeGeometry(4 + Math.random() * 3, h, 7), treeMat);
+            t.position.set(x, h / 2, z);
+            scene.add(t);
+          }
+        }
+      }
+
+      // --- 自由飛行用に、広いエリアへ景観を散らす(飛び回るときの目印) ---
+      const cz = -RUNWAY_LEN / 2;
+      for (let i = 0; i < 140; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 350 + Math.random() * 2300;
+        const x = Math.sin(a) * r, z = cz + Math.cos(a) * r;
+        if (Math.abs(x) < 60 && z > -RUNWAY_LEN - 100 && z < 80) continue; // 滑走路の上は避ける
+        if (Math.random() < 0.35) {
+          const h = 20 + Math.random() * 120;        // 丘
+          const hill = new THREE.Mesh(new THREE.ConeGeometry(60 + Math.random() * 140, h, 8), new THREE.MeshLambertMaterial({ color: 0x4a7a40 }));
+          hill.position.set(x, h / 2 - 10, z); scene.add(hill);
+        } else if (Math.random() < 0.5) {
+          const h = 15 + Math.random() * 70;          // ビル
+          const b = new THREE.Mesh(new THREE.BoxGeometry(12 + Math.random() * 26, h, 12 + Math.random() * 26), buildMat);
+          b.position.set(x, h / 2, z); scene.add(b);
+        } else {
+          const h = 10 + Math.random() * 18;          // 木立
+          const t = new THREE.Mesh(new THREE.ConeGeometry(5 + Math.random() * 4, h, 7), treeMat);
+          t.position.set(x, h / 2, z); scene.add(t);
+        }
+      }
+
+      // --- 遠景の山 ---
+      const mtnMat = new THREE.MeshLambertMaterial({ color: 0x42688f });
+      for (let i = 0; i < 22; i++) {
+        const a = (i / 22) * Math.PI * 2;
+        const r = 2600 + Math.random() * 700;
+        const h = 300 + Math.random() * 500;
+        const m = new THREE.Mesh(new THREE.ConeGeometry(300 + Math.random() * 300, h, 6), mtnMat);
+        m.position.set(Math.sin(a) * r, h / 2 - 40, cz + Math.cos(a) * r);
+        scene.add(m);
+      }
+
+      three = { renderer, scene, camera };
+      resize();
+    }
+
+    function resize() {
+      const w = window.innerWidth, h = window.innerHeight;
+      hud.width = w; hud.height = h;
+      if (three) {
+        three.renderer.setSize(w, h, false);
+        three.camera.aspect = w / h;
+        three.camera.updateProjectionMatrix();
+      }
+    }
+    window.addEventListener("resize", resize);
+    window.addEventListener("keydown", (e) => { keys[e.key.toLowerCase()] = true; });
+    window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+
+    // ================= カメラ & モデル =================
+    async function loadModel() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: 2,
+      });
+    }
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+    }
+
+    // 握り(グー)判定: 4本指の指先が、第2関節より手首に近い＝折りたたまれている
+    function isFist(lm) {
+      const w = lm[0];
+      const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+      let folded = 0;
+      for (const [tip, pip] of [[8, 6], [12, 10], [16, 14], [20, 18]]) {
+        if (d(lm[tip], w) < d(lm[pip], w) * 1.0) folded++;
+      }
+      return folded >= 3;
+    }
+
+    // 手検出 → 正規化座標(xはミラー) + 握り状態
+    function detectHands(nowMs) {
+      if (!video.srcObject) return lastHands;
+      if (video.currentTime === lastVideoTime) return lastHands;
+      lastVideoTime = video.currentTime;
+      const out = [];
+      const res = handLandmarker.detectForVideo(video, nowMs);
+      if (res?.landmarks) {
+        for (const lm of res.landmarks) {
+          const c = lm[9]; // 手のひら中心
+          out.push({ x: 1 - c.x, y: c.y, fist: isFist(lm) });
+        }
+      }
+      lastHands = out;
+      return out;
+    }
+
+    // ================= エンジン音 =================
+    let actx = null, eng = null;
+    function startAudio() {
+      try {
+        actx = new (window.AudioContext || window.webkitAudioContext)();
+        const o1 = actx.createOscillator(), o2 = actx.createOscillator();
+        o1.type = "sawtooth"; o2.type = "sawtooth"; o2.detune.value = 16;
+        const lp = actx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 600;
+        const g = actx.createGain(); g.gain.value = 0.0;
+        o1.connect(lp); o2.connect(lp); lp.connect(g); g.connect(actx.destination);
+        o1.start(); o2.start();
+        eng = { o1, o2, g, lp };
+      } catch (e) { /* 音は無くても遊べる */ }
+    }
+    function updateAudio() {
+      if (!eng) return;
+      const t = actx.currentTime;
+      const f = 42 + throttle * 58 + Math.min(speed, 120) * 0.35;
+      eng.o1.frequency.setTargetAtTime(f, t, 0.06);
+      eng.o2.frequency.setTargetAtTime(f * 1.01, t, 0.06);
+      eng.lp.frequency.setTargetAtTime(500 + throttle * 1500, t, 0.1);
+      eng.g.gain.setTargetAtTime(state === "playing" ? 0.015 + throttle * 0.05 : 0, t, 0.12);
+    }
+
+    // ================= ゲーム進行 =================
+    function resetFlight() {
+      speed = 0; alt = 0; vspeed = 0; pitch = 0; airborne = false;
+      stalled = false; throttle = 0; elevator = 0;
+      heading = 0; bank = 0; bankTarget = 0; posX = 0; posZ = 0; everAirborne = false; freeFlight = false;
+      maxSpeed = 0; maxAlt = 0; tStart = performance.now(); callout = ""; calloutT = 0; shake = 0;
+      throttleLever.pos = throttleLever.max; throttleLever.grip = false;
+      yoke.grip = false; yoke.mode = "none"; yoke.hands = []; yoke.refX = 0.5;
+    }
+
+    function setCallout(text, dur = 1.4) { callout = text; calloutT = dur; }
+
+    function clOf(aoa) {
+      if (aoa <= AOA_CRIT) return Math.max(-0.35, 0.092 * aoa);
+      return Math.max(0.35, 1.2 - 0.09 * (aoa - AOA_CRIT)); // 失速後は揚力低下
+    }
+
+    // 操作の更新(仮想の手で各コントロールを✊掴む。操縦桿は両手でステアリングのように)
+    function updateControls(hands, dt) {
+      const prevMode = yoke.mode;
+      // 握っている手を、左ゾーン(スロットル)と中央〜右ゾーン(操縦桿)に振り分け
+      let tHand = null;
+      const yokeFists = [];
+      for (const h of hands) {
+        if (!h.fist) continue;
+        if (h.x < THR_ZONE_X) { if (!tHand || h.x < tHand.x) tHand = h; }
+        else yokeFists.push(h);
+      }
+
+      // --- スロットル(左手で掴んで上下。手にレバーが追従、離すと保持) ---
+      if (tHand) throttleLever.pos += (Math.min(throttleLever.max, Math.max(throttleLever.min, tHand.y)) - throttleLever.pos) * Math.min(1, dt * 14);
+      throttleLever.grip = !!tHand;
+      if (keys["w"]) throttleLever.pos = Math.max(throttleLever.min, throttleLever.pos - dt * 0.5);
+      if (keys["s"]) throttleLever.pos = Math.min(throttleLever.max, throttleLever.pos + dt * 0.5);
+      throttle = (throttleLever.max - throttleLever.pos) / (throttleLever.max - throttleLever.min);
+
+      // --- 操縦桿 ---
+      let elevTarget = 0, bankT = 0;
+      if (yokeFists.length >= 2) {
+        // 両手＝ステアリング: 両手を結ぶ線の傾き＝バンク、平均の高さ＝ピッチ
+        const hs = yokeFists.slice().sort((a, b) => a.x - b.x);
+        const L = hs[0], R = hs[hs.length - 1];
+        bankT = Math.max(-1, Math.min(1, Math.atan2(R.y - L.y, R.x - L.x) / MAX_WHEEL_ANGLE));
+        elevTarget = Math.max(-1, Math.min(1, ((L.y + R.y) / 2 - YOKE_CENTER) / YOKE_HALF));
+        yoke.mode = "both"; yoke.hands = [L, R];
+      } else if (yokeFists.length === 1) {
+        // 片手＝高さでピッチ、掴んだ位置からの左右でバンク
+        const h = yokeFists[0];
+        if (prevMode !== "one") yoke.refX = h.x;
+        elevTarget = Math.max(-1, Math.min(1, (h.y - YOKE_CENTER) / YOKE_HALF));
+        let dx = h.x - yoke.refX; const dz = 0.012;
+        dx = Math.abs(dx) < dz ? 0 : dx - Math.sign(dx) * dz;
+        bankT = Math.max(-1, Math.min(1, dx / ROLL_HALF));
+        yoke.mode = "one"; yoke.hands = [h];
+      } else {
+        yoke.mode = "none"; yoke.hands = [];
+      }
+      yoke.grip = yoke.mode !== "none";
+      // キーボード補助
+      if (keys["arrowup"]) elevTarget = 1;
+      if (keys["arrowdown"]) elevTarget = -1;
+      if (keys["arrowright"]) bankT = 1;
+      if (keys["arrowleft"]) bankT = -1;
+      const held = yoke.grip || keys["arrowup"] || keys["arrowdown"];
+      elevator += (elevTarget - elevator) * Math.min(1, dt * (held ? 14 : 6)); // 握り中は機敏／離すとバネで中立へ
+      bankTarget = bankT;
+    }
+
+    function step(dt) {
+      const thrust = throttle * THRUST_MAX;
+      const onGround = !airborne;
+
+      // ピッチ(ヨーク位置＝目標の機首姿勢。握ったままで一定の姿勢を保てる＝失速しにくい)
+      if (onGround) {
+        const target = elevator > 0 ? elevator * Math.min(1, speed / VR) * 11 : 0;
+        pitch += (target - pitch) * Math.min(1, dt * 4);
+      } else {
+        const target = elevator * (elevator >= 0 ? CMD_PITCH_UP : CMD_PITCH_DN);
+        pitch += (target - pitch) * Math.min(1, dt * 2.5); // ゆったり追従
+        pitch = Math.max(-14, Math.min(CMD_PITCH_UP + 2, pitch));
+      }
+
+      // バンク(離陸後のみ。地上では水平に戻す)
+      const bankGoal = airborne ? bankTarget * MAX_BANK : 0;
+      bank += (bankGoal - bank) * Math.min(1, dt * (airborne ? 4 : 8));
+
+      // 迎角・揚力
+      const flightPath = airborne ? Math.atan2(vspeed, Math.max(8, speed)) : 0;
+      const aoa = pitch - flightPath * 180 / Math.PI;
+      stalled = aoa > AOA_CRIT && speed > 5;
+      const lift = LIFT_K * speed * speed * clOf(aoa);
+
+      // 縦運動(バンクすると有効揚力が cos(bank) 倍に減る＝旋回で高度が落ちる)
+      if (airborne) {
+        vspeed += (lift * Math.cos(bank) - G) * dt;
+        alt += vspeed * dt;
+        // 旋回:coordinated turn。バンク角と速度から方位が変化する
+        heading += TURN_GAIN * (G * Math.tan(bank) / Math.max(25, speed)) * dt;
+        if (alt <= 0) {
+          if (vspeed < -4.5) return crash("墜落 — CRASH");
+          alt = 0; vspeed = 0; airborne = false; pitch = Math.min(pitch, 3); // タッチ＆ゴー
+        }
+      } else if (lift > G && pitch > 1) {
+        airborne = true; everAirborne = true; vspeed = (lift - G) * dt;
+        setCallout("LIFT OFF ✈️", 1.6);
+      }
+
+      // 水平方向
+      const induced = airborne ? 0.02 * Math.abs(aoa) : 0;
+      const gravComp = airborne ? G * Math.sin(flightPath) : 0;
+      const friction = onGround ? ROLL_FRICTION : 0;
+      speed += (thrust - DRAG_K * speed * speed - induced - gravComp - friction) * dt;
+      speed = Math.max(0, speed);
+
+      // 前進(方位に沿ってワールド座標を移動)
+      const vFwd = speed * Math.cos(flightPath);
+      posX += Math.sin(heading) * vFwd * dt;
+      posZ += -Math.cos(heading) * vFwd * dt;
+
+      // コールアウト
+      if (!airborne && !everAirborne && speed >= VR && pitch < 2 && calloutT <= 0) setCallout("ROTATE ▲ 操縦桿を引け", 0.8);
+      if (airborne && !freeFlight && alt >= TARGET_ALT) { freeFlight = true; setCallout("TAKEOFF! ✈️ 自由飛行 — バンクで旋回", 2.4); }
+
+      // 判定(最初の離陸滑走でのみオーバーラン)
+      if (!everAirborne && -posZ > RUNWAY_LEN) return crash("滑走路オーバーラン");
+
+      maxSpeed = Math.max(maxSpeed, speed);
+      maxAlt = Math.max(maxAlt, alt);
+      shake = stalled ? 7 : (airborne ? 0 : 1.2 * (speed / VR));
+      if (calloutT > 0) calloutT -= dt;
+    }
+
+    function updateCamera() {
+      const c = three.camera;
+      c.position.set(posX, EYE_HEIGHT + alt, posZ);
+      // YXZ順: 方位(yaw) → ピッチ → バンク(roll)
+      c.rotation.set(THREE.MathUtils.degToRad(pitch * 0.85), -heading, -bank);
+      if (shake > 0) {
+        c.position.x += (Math.random() - 0.5) * shake * 0.04;
+        c.position.y += (Math.random() - 0.5) * shake * 0.04;
+      }
+    }
+
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+
+      const hands = detectHands(now);
+      updateControls(hands, dt);
+      step(dt);
+      if (state !== "playing") return; // crash が呼ばれた
+      updateCamera();
+      updateAudio();
+      three.renderer.render(three.scene, three.camera);
+      drawHUD(hands);
+      requestAnimationFrame(loop);
+    }
+
+    // ================= HUD描画 =================
+    function rr(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawHUD(hands) {
+      const W = hud.width, H = hud.height;
+      hctx.clearRect(0, 0, W, H);
+
+      // --- コックピットの窓枠 ---
+      drawCockpitFrame(W, H);
+
+      // ===== ヘッドアップ計器(緑) =====
+      const hudCol = stalled ? "#ff5566" : "#6dffba";
+      hctx.textAlign = "left"; hctx.textBaseline = "alphabetic";
+      hctx.fillStyle = hudCol; hctx.font = "700 15px ui-monospace, monospace";
+      // 速度(左) / 高度(右)
+      const kt = Math.round(speed * 1.94384);
+      hctx.font = "800 44px ui-monospace, monospace";
+      hctx.fillText(String(kt).padStart(3, " "), W * 0.27, H * 0.46);
+      hctx.font = "700 14px ui-monospace, monospace";
+      hctx.fillText("KT  AIRSPEED", W * 0.27, H * 0.46 + 20);
+      hctx.fillStyle = speed >= VR ? "#6dffba" : "#ffb347";
+      hctx.fillText("Vr " + Math.round(VR * 1.94384), W * 0.27, H * 0.46 + 40);
+
+      hctx.fillStyle = hudCol;
+      hctx.textAlign = "right";
+      hctx.font = "800 44px ui-monospace, monospace";
+      hctx.fillText(String(Math.round(alt)), W * 0.73, H * 0.46);
+      hctx.font = "700 14px ui-monospace, monospace";
+      hctx.fillText("ALT m" + (freeFlight ? "" : "  目標 " + TARGET_ALT), W * 0.73, H * 0.46 + 20);
+      hctx.fillText("V/S " + (vspeed >= 0 ? "+" : "") + vspeed.toFixed(1), W * 0.73, H * 0.46 + 40);
+      hctx.textAlign = "left";
+
+      // 中央のフライトパス・レティクル
+      hctx.strokeStyle = hudCol; hctx.lineWidth = 2;
+      hctx.beginPath();
+      hctx.arc(W / 2, H * 0.42, 9, 0, Math.PI * 2);
+      hctx.moveTo(W / 2 - 22, H * 0.42); hctx.lineTo(W / 2 - 9, H * 0.42);
+      hctx.moveTo(W / 2 + 9, H * 0.42); hctx.lineTo(W / 2 + 22, H * 0.42);
+      hctx.stroke();
+
+      // バンク計 + 方位(上部)
+      drawBankHeading(W, H, hudCol);
+
+      // コールアウト
+      if (calloutT > 0 && callout) {
+        hctx.textAlign = "center";
+        hctx.font = "900 38px ui-monospace, monospace";
+        hctx.fillStyle = (Math.floor(performance.now() / 200) % 2) ? "#ffd166" : "#fff";
+        hctx.fillText(callout, W / 2, H * 0.30);
+        hctx.textAlign = "left";
+      }
+      // 失速警報
+      if (stalled) {
+        hctx.textAlign = "center";
+        hctx.fillStyle = (Math.floor(performance.now() / 150) % 2) ? "#ff3355" : "#550000";
+        hctx.font = "900 32px ui-monospace, monospace";
+        hctx.fillText("⚠ STALL — 機首を下げろ", W / 2, H * 0.36);
+        hctx.textAlign = "left";
+      }
+
+      // ===== グレアシールド＋計器盤 =====
+      const dashY = H * 0.73;
+      const grd = hctx.createLinearGradient(0, dashY - 16, 0, H);
+      grd.addColorStop(0, "#12151f"); grd.addColorStop(1, "#05060a");
+      hctx.fillStyle = grd;
+      hctx.beginPath();
+      hctx.moveTo(0, dashY + 18);
+      hctx.quadraticCurveTo(W * 0.5, dashY - 14, W, dashY + 18);
+      hctx.lineTo(W, H); hctx.lineTo(0, H); hctx.closePath(); hctx.fill();
+      // グレアシールド前縁のハイライト
+      hctx.strokeStyle = "rgba(150,170,200,.18)"; hctx.lineWidth = 2;
+      hctx.beginPath(); hctx.moveTo(0, dashY + 18); hctx.quadraticCurveTo(W * 0.5, dashY - 14, W, dashY + 18); hctx.stroke();
+
+      drawAttitude(W * 0.27, dashY + (H - dashY) * 0.5, (H - dashY) * 0.34);
+      if (camReady) {
+        drawPIP(hands, W - 240, dashY + 22, 222, H - dashY - 40);
+      } else {
+        hctx.fillStyle = "#8b93a7"; hctx.font = "700 12px ui-monospace, monospace"; hctx.textAlign = "right";
+        hctx.fillText("⌨ KEYBOARD: W/S=スロットル ↑↓=ピッチ ←→=バンク", W - 24, dashY + 36);
+        hctx.textAlign = "left";
+      }
+
+      // 操作ヒント + ピッチ/バンク数値
+      hctx.textAlign = "center";
+      hctx.fillStyle = "#8b93a7"; hctx.font = "700 11px ui-monospace, monospace";
+      hctx.fillText("✊両手で操縦桿を握って傾け＝旋回・手前に引く＝機首上げ ／ ✊左手で左のスロットル", W * 0.5, dashY + 14);
+      const bdeg = Math.round(bank * 180 / Math.PI);
+      hctx.fillStyle = yoke.grip ? "#3df0d6" : "#cfd6e6"; hctx.font = "800 13px ui-monospace, monospace";
+      hctx.fillText("PITCH " + (pitch >= 0 ? "+" : "") + pitch.toFixed(0) + "°    BANK " +
+        Math.abs(bdeg) + "°" + (bdeg > 1 ? "R" : bdeg < -1 ? "L" : ""), W * 0.5, H - 12);
+      hctx.textAlign = "left";
+
+      // 手で掴むコントロール＋仮想の手(計器の上に描画)
+      drawThrottle(W, H);
+      drawYoke(W, H);
+      drawHands(hands, W, H);
+    }
+
+    // コックピットの窓枠(Aピラー＋上枠、内側に金属ベベル)
+    function drawCockpitFrame(W, H) {
+      const tg = hctx.createLinearGradient(0, 0, 0, 24);
+      tg.addColorStop(0, "#0b0e16"); tg.addColorStop(1, "#06080f");
+      hctx.fillStyle = tg; hctx.fillRect(0, 0, W, 20);
+      hctx.fillStyle = "#080a11";
+      hctx.beginPath(); hctx.moveTo(0, 0); hctx.lineTo(W * 0.205, 0);
+      hctx.quadraticCurveTo(W * 0.105, H * 0.27, 0, H * 0.66); hctx.closePath(); hctx.fill();
+      hctx.beginPath(); hctx.moveTo(W, 0); hctx.lineTo(W * 0.795, 0);
+      hctx.quadraticCurveTo(W * 0.895, H * 0.27, W, H * 0.66); hctx.closePath(); hctx.fill();
+      hctx.strokeStyle = "rgba(135,155,185,.28)"; hctx.lineWidth = 2.5;
+      hctx.beginPath(); hctx.moveTo(W * 0.205, 0); hctx.quadraticCurveTo(W * 0.105, H * 0.27, 0, H * 0.66); hctx.stroke();
+      hctx.beginPath(); hctx.moveTo(W * 0.795, 0); hctx.quadraticCurveTo(W * 0.895, H * 0.27, W, H * 0.66); hctx.stroke();
+      hctx.strokeStyle = "rgba(135,155,185,.16)"; hctx.lineWidth = 1.5;
+      hctx.beginPath(); hctx.moveTo(0, 20); hctx.lineTo(W, 20); hctx.stroke();
+    }
+
+    // バンク計(ロールスケール)＋ 方位
+    function drawBankHeading(W, H, col) {
+      const cx = W / 2, cy = H * 0.13, R = Math.min(W, H) * 0.12;
+      hctx.strokeStyle = col; hctx.lineWidth = 2;
+      hctx.beginPath(); hctx.arc(cx, cy, R, Math.PI * 1.16, Math.PI * 1.84); hctx.stroke();
+      for (const a of [-45, -30, -15, 0, 15, 30, 45]) {
+        const ang = -Math.PI / 2 + a * Math.PI / 180;
+        const o = a === 0 ? 11 : 6;
+        hctx.beginPath();
+        hctx.moveTo(cx + Math.cos(ang) * (R - 5), cy + Math.sin(ang) * (R - 5));
+        hctx.lineTo(cx + Math.cos(ang) * (R + o), cy + Math.sin(ang) * (R + o));
+        hctx.stroke();
+      }
+      // 現在バンクのポインタ
+      const bdeg = bank * 180 / Math.PI;
+      const pang = -Math.PI / 2 + Math.max(-52, Math.min(52, bdeg)) * Math.PI / 180;
+      const px = cx + Math.cos(pang) * (R - 6), py = cy + Math.sin(pang) * (R - 6);
+      const nx = Math.cos(pang), ny = Math.sin(pang);
+      hctx.fillStyle = Math.abs(bdeg) > 38 ? "#ffb347" : col;
+      hctx.beginPath();
+      hctx.moveTo(px, py);
+      hctx.lineTo(px - nx * 12 - ny * 6, py - ny * 12 + nx * 6);
+      hctx.lineTo(px - nx * 12 + ny * 6, py - ny * 12 - nx * 6);
+      hctx.closePath(); hctx.fill();
+      // 方位
+      const hdg = Math.round((((heading * 180 / Math.PI) % 360) + 360) % 360);
+      hctx.fillStyle = col; hctx.textAlign = "center";
+      hctx.font = "800 22px ui-monospace, monospace";
+      hctx.fillText("HDG " + String(hdg).padStart(3, "0"), cx, cy + 8);
+      if (freeFlight) {
+        hctx.font = "700 12px ui-monospace, monospace"; hctx.fillStyle = "#ffd166";
+        hctx.fillText("✈ FREE FLIGHT", cx, cy + 26);
+      }
+      hctx.textAlign = "left";
+    }
+
+    // スロットルレバー(左側の縦レバー。掴んだ手に追従、離すと保持)
+    function drawThrottle(W, H) {
+      const x = W * 0.10;
+      const top = H * throttleLever.min, bot = H * throttleLever.max;
+      const knobY = H * throttleLever.pos;
+      hctx.fillStyle = "rgba(12,15,22,.5)"; rr(hctx, x - 24, top - 24, 48, (bot - top) + 64, 12); hctx.fill();
+      hctx.strokeStyle = "#2a2f3c"; hctx.lineWidth = 12; hctx.lineCap = "round";
+      hctx.beginPath(); hctx.moveTo(x, top); hctx.lineTo(x, bot); hctx.stroke();
+      hctx.fillStyle = "#5a6172"; hctx.font = "700 11px ui-monospace, monospace"; hctx.textAlign = "center";
+      hctx.fillText("FULL", x, top - 10); hctx.fillText("IDLE", x, bot + 16);
+      const col = throttleLever.grip ? "#3df0d6" : "#cfd6e6";
+      hctx.strokeStyle = col; hctx.lineWidth = 7;
+      hctx.beginPath(); hctx.moveTo(x, bot); hctx.lineTo(x, knobY); hctx.stroke();
+      if (throttleLever.grip) { hctx.fillStyle = "rgba(61,240,214,.2)"; hctx.beginPath(); hctx.arc(x, knobY, 23, 0, Math.PI * 2); hctx.fill(); }
+      hctx.fillStyle = col; hctx.beginPath(); hctx.arc(x, knobY, throttleLever.grip ? 16 : 13, 0, Math.PI * 2); hctx.fill();
+      hctx.fillStyle = "#e8edf7"; hctx.font = "800 16px ui-monospace, monospace"; hctx.textAlign = "center";
+      hctx.fillText(Math.round(throttle * 100) + "%", x, bot + 36);
+      hctx.fillStyle = "#8b93a7"; hctx.font = "700 10px ui-monospace, monospace";
+      hctx.fillText("THROTTLE ✊", x, bot + 50);
+      hctx.textAlign = "left";
+    }
+
+    // 操縦桿(掴んだ手に追従。両手＝ステアリング/片手＝バンク+ピッチ/離す＝中立)
+    function drawYoke(W, H) {
+      const col = yoke.grip ? "#3df0d6" : "#c8d2e4";
+      let cx, hubY, ang, arm;
+      if (yoke.mode === "both") {
+        const L = yoke.hands[0], R = yoke.hands[1];
+        const lx = L.x * W, ly = L.y * H, rx = R.x * W, ry = R.y * H;
+        cx = (lx + rx) / 2; hubY = (ly + ry) / 2;
+        ang = Math.atan2(ry - ly, rx - lx);
+        arm = Math.max(W * 0.06, Math.min(W * 0.22, Math.hypot(rx - lx, ry - ly) / 2));
+      } else if (yoke.mode === "one") {
+        const h = yoke.hands[0];
+        cx = h.x * W; hubY = h.y * H; ang = bank; arm = Math.min(W * 0.12, H * 0.14);
+      } else {
+        cx = W * 0.5; hubY = H * 0.84 + elevator * H * 0.04; ang = bank; arm = Math.min(W * 0.12, H * 0.14);
+      }
+      // コラム(下から伸びる、回転しない)
+      hctx.lineCap = "round";
+      hctx.strokeStyle = "#161b27"; hctx.lineWidth = 26; hctx.beginPath(); hctx.moveTo(cx, H + 34); hctx.lineTo(cx, hubY); hctx.stroke();
+      hctx.strokeStyle = "#283041"; hctx.lineWidth = 15; hctx.beginPath(); hctx.moveTo(cx, H + 34); hctx.lineTo(cx, hubY); hctx.stroke();
+      // ホイール(ang で回転)
+      hctx.save(); hctx.translate(cx, hubY); hctx.rotate(ang);
+      if (yoke.grip) { hctx.fillStyle = "rgba(61,240,214,.13)"; hctx.beginPath(); hctx.arc(0, 0, arm * 0.85, 0, Math.PI * 2); hctx.fill(); }
+      hctx.fillStyle = "#39414f"; hctx.beginPath(); hctx.arc(0, 0, 18, 0, Math.PI * 2); hctx.fill();
+      hctx.fillStyle = "#1d2330"; hctx.beginPath(); hctx.arc(0, 0, 10, 0, Math.PI * 2); hctx.fill();
+      hctx.strokeStyle = col; hctx.lineWidth = 12; hctx.lineJoin = "round";
+      hctx.beginPath();
+      hctx.moveTo(-arm, -28); hctx.lineTo(-arm, -4); hctx.quadraticCurveTo(-arm, 8, -arm + 16, 8);
+      hctx.lineTo(arm - 16, 8); hctx.quadraticCurveTo(arm, 8, arm, -4); hctx.lineTo(arm, -28);
+      hctx.stroke();
+      hctx.fillStyle = col;
+      for (const gx of [-arm, arm]) { rr(hctx, gx - 8, -34, 16, 28, 7); hctx.fill(); }
+      hctx.restore();
+    }
+
+    // 仮想の手(✊握り / 🖐開き)
+    function drawHands(hands, W, H) {
+      for (const h of hands) {
+        const x = h.x * W, y = h.y * H;
+        hctx.beginPath(); hctx.arc(x, y, h.fist ? 24 : 28, 0, Math.PI * 2);
+        hctx.fillStyle = h.fist ? "rgba(61,240,214,.16)" : "rgba(255,255,255,.08)";
+        hctx.fill();
+        hctx.lineWidth = 2; hctx.strokeStyle = h.fist ? "rgba(61,240,214,.75)" : "rgba(255,255,255,.5)";
+        hctx.stroke();
+        hctx.font = "28px sans-serif"; hctx.textAlign = "center"; hctx.textBaseline = "middle";
+        hctx.fillText(h.fist ? "✊" : "🖐", x, y + 1);
+      }
+      hctx.textAlign = "left"; hctx.textBaseline = "alphabetic";
+    }
+
+    // 姿勢指示器(人工水平儀): ピッチ＆バンクを表示
+    function drawAttitude(cx, cy, R) {
+      const s = R / 28; // 1度あたりのピクセル
+      hctx.fillStyle = "#0a0d15"; hctx.beginPath(); hctx.arc(cx, cy, R + 7, 0, Math.PI * 2); hctx.fill();
+      hctx.lineWidth = 3; hctx.strokeStyle = "#2b3547"; hctx.beginPath(); hctx.arc(cx, cy, R + 5, 0, Math.PI * 2); hctx.stroke();
+      hctx.save();
+      hctx.beginPath(); hctx.arc(cx, cy, R, 0, Math.PI * 2); hctx.clip();
+      hctx.translate(cx, cy);
+      hctx.rotate(-bank);          // バンクと逆に地平線が回る
+      hctx.translate(0, pitch * s); // 機首上げで地平線が下がる
+      hctx.fillStyle = "#2f79c6"; hctx.fillRect(-R * 2.2, -R * 3.2, R * 4.4, R * 3.2);
+      hctx.fillStyle = "#7a5230"; hctx.fillRect(-R * 2.2, 0, R * 4.4, R * 3.2);
+      hctx.strokeStyle = "#fff"; hctx.lineWidth = 2.5;
+      hctx.beginPath(); hctx.moveTo(-R * 2.2, 0); hctx.lineTo(R * 2.2, 0); hctx.stroke();
+      hctx.strokeStyle = "rgba(255,255,255,.85)"; hctx.lineWidth = 1.5;
+      for (const p of [-20, -10, 10, 20]) {
+        const yy = -p * s, wl = (Math.abs(p) % 20 === 0) ? R * 0.5 : R * 0.3;
+        hctx.beginPath(); hctx.moveTo(-wl / 2, yy); hctx.lineTo(wl / 2, yy); hctx.stroke();
+      }
+      hctx.restore();
+      // 固定の機体シンボル(黄)
+      hctx.strokeStyle = "#ffd14a"; hctx.lineWidth = 3.5; hctx.lineCap = "round";
+      hctx.beginPath();
+      hctx.moveTo(cx - R * 0.55, cy); hctx.lineTo(cx - R * 0.18, cy); hctx.lineTo(cx - R * 0.18, cy + R * 0.12);
+      hctx.moveTo(cx + R * 0.55, cy); hctx.lineTo(cx + R * 0.18, cy); hctx.lineTo(cx + R * 0.18, cy + R * 0.12);
+      hctx.stroke();
+      hctx.fillStyle = "#ffd14a"; hctx.beginPath(); hctx.arc(cx, cy, 3, 0, Math.PI * 2); hctx.fill();
+      // 上部バンク指標(固定三角)
+      hctx.fillStyle = "#e8edf7";
+      hctx.beginPath(); hctx.moveTo(cx, cy - R + 3); hctx.lineTo(cx - 6, cy - R - 7); hctx.lineTo(cx + 6, cy - R - 7); hctx.closePath(); hctx.fill();
+      hctx.fillStyle = "#8b93a7"; hctx.font = "700 10px ui-monospace, monospace"; hctx.textAlign = "center";
+      hctx.fillText("ATTITUDE", cx, cy + R + 18);
+      hctx.textAlign = "left";
+    }
+
+    // 手元カメラ(PIP) + 手のカーソル
+    function drawPIP(hands, x, y, w, h) {
+      hctx.save();
+      rr(hctx, x, y, w, h, 10); hctx.clip();
+      hctx.translate(x + w, y); hctx.scale(-1, 1); // ミラー
+      try { hctx.drawImage(video, 0, 0, w, h); } catch (e) {}
+      hctx.restore();
+      hctx.strokeStyle = "rgba(255,255,255,.25)"; hctx.lineWidth = 2;
+      rr(hctx, x, y, w, h, 10); hctx.stroke();
+      // 左=スロットル / 右=操縦桿 のゾーン
+      hctx.fillStyle = "rgba(56,249,215,.10)"; hctx.fillRect(x, y, w / 2, h);
+      hctx.fillStyle = "rgba(255,179,71,.10)"; hctx.fillRect(x + w / 2, y, w / 2, h);
+      // 手カーソル
+      for (const hd of hands) {
+        const px = x + hd.x * w, py = y + hd.y * h;
+        hctx.beginPath(); hctx.arc(px, py, hd.fist ? 12 : 9, 0, Math.PI * 2);
+        hctx.fillStyle = hd.fist ? "rgba(56,249,215,.85)" : "rgba(255,255,255,.35)";
+        hctx.fill();
+        hctx.strokeStyle = "#fff"; hctx.lineWidth = 1.5; hctx.stroke();
+      }
+      hctx.fillStyle = "#cfd6e6"; hctx.font = "700 10px ui-monospace, monospace"; hctx.textAlign = "center";
+      hctx.fillText("✊握って操作", x + w / 2, y + h + 13);
+      hctx.textAlign = "left";
+    }
+
+    // ================= 終了処理 =================
+    function endOverlay(html) {
+      state = "over";
+      updateAudio();
+      overlay.classList.remove("hidden");
+      overlay.innerHTML = html;
+      overlay.querySelector("#again")?.addEventListener("click", () => {
+        overlay.classList.add("hidden");
+        resetFlight();
+        state = "playing"; lastTime = performance.now();
+        requestAnimationFrame(loop);
+      });
+    }
+    function crash(title) {
+      shake = 0;
+      const sec = ((performance.now() - tStart) / 1000).toFixed(1);
+      endOverlay(
+        '<h1>' + title + ' 💥</h1><p>もう一度トライ！フルスロットルで Vr まで加速 → 操縦桿を手前に引いて離陸。</p>' +
+        '<div class="stats"><div>飛行時間<b>' + sec + 's</b></div>' +
+        '<div>最高速度<b>' + Math.round(maxSpeed * 1.94384) + ' kt</b></div>' +
+        '<div>最高高度<b>' + Math.round(maxAlt) + ' m</b></div></div>' +
+        '<button class="btn" id="again">もう一度</button>'
+      );
+    }
+
+    // ================= 起動 =================
+    startBtn.addEventListener("click", async () => {
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      try {
+        if (!three) buildScene();
+        // カメラ＋手検出は任意。失敗してもキーボード操作で続行する
+        try {
+          await startCamera();
+          if (!handLandmarker) await loadModel();
+          camReady = true;
+        } catch (camErr) {
+          console.warn("カメラ無しで起動（キーボード操作）:", camErr?.message || camErr);
+          camReady = false;
+        }
+        startAudio();
+        resetFlight();
+        overlay.classList.add("hidden");
+        state = "playing"; lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        overlay.classList.remove("hidden");
+        overlay.innerHTML = '<h1>HAND&nbsp;COCKPIT&nbsp;✈️</h1><div id="err"></div><button class="btn" id="retry">もう一度</button>';
+        overlay.querySelector("#err").textContent =
+          "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+        overlay.querySelector("#retry").addEventListener("click", () => location.reload());
+      }
+    });
+  </script>
+</body>
+</html>
