@@ -48,12 +48,56 @@
       transition: transform .12s, box-shadow .12s;
     }
     .btn:hover { transform: translateY(-2px); }
-    .spinner {
-      width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.2);
-      border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
     #err { color: var(--danger); font-size: 15px; max-width: 460px; }
+
+    /* ローディング画面 */
+    #loading { position: absolute; inset: 0; overflow: hidden; background: #05070f; display: none; z-index: 50; }
+    #loading.show { display: block; }
+    #loading .bg {
+      position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+      transform: scale(1.05); animation: ldZoom 9s ease-in-out infinite alternate;
+    }
+    @keyframes ldZoom { to { transform: scale(1.13); } }
+    #loading .vignette {
+      position: absolute; inset: 0;
+      background: radial-gradient(125% 85% at 50% 38%, transparent 42%, rgba(0,0,0,.62) 100%);
+    }
+    #loading .sweep {
+      position: absolute; top: -10%; bottom: -10%; left: -50%; width: 45%;
+      background: linear-gradient(100deg, transparent, rgba(255,255,255,.16), transparent);
+      filter: blur(8px); transform: skewX(-12deg); animation: ldSweep 2.6s ease-in-out infinite;
+    }
+    @keyframes ldSweep { 0% { left: -50%; } 65%, 100% { left: 115%; } }
+    #loading .foot {
+      position: absolute; left: 50%; bottom: 8%; transform: translateX(-50%);
+      width: min(560px, 82%); text-align: center;
+    }
+    #loading .status {
+      font-size: 15px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase;
+      color: #eafff6; text-shadow: 0 2px 12px rgba(0,0,0,.85); margin-bottom: 13px;
+    }
+    #loading .dots::after { content: "···"; animation: ldDots 1.2s steps(4, end) infinite; }
+    @keyframes ldDots { 0% { content: ""; } 25% { content: "·"; } 50% { content: "··"; } 75% { content: "···"; } }
+    #loading .bar {
+      position: relative; height: 11px; border-radius: 999px; background: rgba(255,255,255,.13);
+      overflow: hidden; box-shadow: inset 0 1px 3px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08);
+    }
+    #loading .fill {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 0%; border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent), var(--amber));
+      box-shadow: 0 0 18px rgba(56,249,215,.7), 0 0 10px rgba(255,179,71,.6);
+      transition: width .5s cubic-bezier(.2,.8,.2,1);
+    }
+    #loading .fill::after {
+      content: ""; position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent);
+      animation: ldShine 1.1s linear infinite;
+    }
+    @keyframes ldShine { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+    #loading .pct {
+      margin-top: 11px; font-size: 13px; font-weight: 800; letter-spacing: .1em;
+      color: #cffff0; font-variant-numeric: tabular-nums; text-shadow: 0 2px 10px rgba(0,0,0,.85);
+    }
   </style>
 </head>
 <body>
@@ -73,6 +117,17 @@
       <button class="btn" id="startBtn">フライト開始</button>
       <p class="keys">カメラが無い時はキーボードでも操作可：W/S＝スロットル, ↑/↓＝ピッチ, ←/→＝バンク</p>
     </div>
+
+    <div id="loading">
+      <img class="bg" src="loading-cockpit.png" alt="NOW LOADING" />
+      <div class="vignette"></div>
+      <div class="sweep"></div>
+      <div class="foot">
+        <div class="status"><span id="loadStatusText">起動中</span><span class="dots"></span></div>
+        <div class="bar"><div class="fill" id="loadFill"></div></div>
+        <div class="pct" id="loadPct">0%</div>
+      </div>
+    </div>
   </div>
 
   <script type="module">
@@ -85,6 +140,10 @@
     const hctx = hud.getContext("2d");
     const overlay = document.getElementById("overlay");
     const startBtn = document.getElementById("startBtn");
+    const loadingEl = document.getElementById("loading");
+    const loadStatusText = document.getElementById("loadStatusText");
+    const loadFill = document.getElementById("loadFill");
+    const loadPct = document.getElementById("loadPct");
 
     // ================= 飛行モデル定数 =================
     const G = 9.81;            // 重力加速度
@@ -196,6 +255,34 @@
       return new THREE.CanvasTexture(c);
     }
 
+    // 夕方のビル用テクスチャ: 外壁(map)と窓明かり(emissive)の2枚を返す
+    function makeWindowTexture() {
+      const W = 128, Hh = 256;
+      const mapC = document.createElement("canvas"); mapC.width = W; mapC.height = Hh;
+      const emC = document.createElement("canvas"); emC.width = W; emC.height = Hh;
+      const mx = mapC.getContext("2d"), ex = emC.getContext("2d");
+      const g = mx.createLinearGradient(0, 0, 0, Hh);
+      g.addColorStop(0, "#2a2f3a"); g.addColorStop(1, "#161a22");
+      mx.fillStyle = g; mx.fillRect(0, 0, W, Hh);
+      ex.fillStyle = "#000"; ex.fillRect(0, 0, W, Hh);
+      const cols = 5, rows = 11, pad = 6;
+      const cw = (W - pad * 2) / cols, ch = (Hh - pad * 2) / rows;
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+        const x = pad + c * cw + cw * 0.18, y = pad + r * ch + ch * 0.15;
+        const ww = cw * 0.64, wh = ch * 0.68;
+        if (Math.random() < 0.5) { // 点灯
+          const cstr = Math.random() < 0.85
+            ? `rgb(255,${200 + (Math.random() * 40 | 0)},${120 + (Math.random() * 60 | 0)})`  // 暖色
+            : `rgb(${170 + (Math.random() * 40 | 0)},${205 + (Math.random() * 30 | 0)},255)`;   // 蛍光色
+          mx.fillStyle = cstr; mx.fillRect(x, y, ww, wh);
+          ex.fillStyle = cstr; ex.fillRect(x, y, ww, wh);
+        } else { // 消灯
+          mx.fillStyle = "#0c0f15"; mx.fillRect(x, y, ww, wh);
+        }
+      }
+      return { map: new THREE.CanvasTexture(mapC), emissive: new THREE.CanvasTexture(emC) };
+    }
+
     // 一人称で窓の外に見える「自機」(機首カウル＋回るプロペラ＋主翼)
     function buildAircraft() {
       const g = new THREE.Group();
@@ -243,32 +330,37 @@
       const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true });
       renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
       const scene = new THREE.Scene();
-      scene.fog = new THREE.Fog(0xbfe0ff, 700, 3800);
+      scene.fog = new THREE.Fog(0x2c3354, 600, 3200); // 夕方のヘイズ
       const camera = new THREE.PerspectiveCamera(72, 1, 0.5, 7000);
       camera.rotation.order = "YXZ"; // yaw→pitch→roll の順で姿勢を合成
 
-      // --- 空(グラデーションドーム) ---
+      // --- 空(夕焼けグラデーションドーム: 地平=暖色 → 中間=紫 → 天頂=濃紺) ---
       const skyMat = new THREE.ShaderMaterial({
         side: THREE.BackSide, depthWrite: false,
-        uniforms: { top: { value: new THREE.Color(0x2a6bd0) }, bot: { value: new THREE.Color(0xcfeaff) } },
+        uniforms: {
+          top: { value: new THREE.Color(0x0e1838) },
+          mid: { value: new THREE.Color(0x4a4f8a) },
+          hor: { value: new THREE.Color(0xff8b46) },
+        },
         vertexShader: "varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0);}",
-        fragmentShader: "uniform vec3 top; uniform vec3 bot; varying vec3 vP; void main(){ float h = clamp(normalize(vP).y*1.4+0.15,0.0,1.0); gl_FragColor = vec4(mix(bot,top,h),1.0);}"
+        fragmentShader: "uniform vec3 top; uniform vec3 mid; uniform vec3 hor; varying vec3 vP; void main(){ float y = normalize(vP).y; float t = clamp(y*1.1+0.08,0.0,1.0); vec3 c = mix(hor, mid, smoothstep(0.0,0.28,t)); c = mix(c, top, smoothstep(0.22,0.85,t)); gl_FragColor = vec4(c,1.0);}"
       });
       scene.add(new THREE.Mesh(new THREE.SphereGeometry(5000, 32, 16), skyMat));
 
-      // --- ライト ---
-      scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x4a5a3a, 1.0));
-      const sun = new THREE.DirectionalLight(0xfff2d6, 1.4);
-      sun.position.set(-600, 900, 500);
+      // --- ライト(夕方: 低く暖かい夕日＋薄明) ---
+      scene.add(new THREE.HemisphereLight(0x35496f, 0x171720, 0.55));
+      scene.add(new THREE.AmbientLight(0x1f2742, 0.35));
+      const sun = new THREE.DirectionalLight(0xff9a4e, 0.95);
+      sun.position.set(-1400, 320, -260);
       scene.add(sun);
 
       const cz = -RUNWAY_LEN / 2;
 
-      // --- 地面(手続き草地テクスチャ) ---
+      // --- 地面(手続き草地テクスチャ。夕方なので暗めの緑) ---
       const grassTex = makeGrassTexture(); grassTex.repeat.set(70, 70);
       const ground = new THREE.Mesh(
         new THREE.PlaneGeometry(12000, 12000),
-        new THREE.MeshLambertMaterial({ map: grassTex, color: 0xcfe0b8 })
+        new THREE.MeshLambertMaterial({ map: grassTex, color: 0x8a9c74 })
       );
       ground.rotation.x = -Math.PI / 2;
       ground.position.z = cz;
@@ -277,13 +369,13 @@
       // --- 滑走路(マーキング・番号を焼き込んだテクスチャ) ---
       const rw = new THREE.Mesh(
         new THREE.PlaneGeometry(50, RUNWAY_LEN + 300),
-        new THREE.MeshLambertMaterial({ map: makeRunwayTexture(), color: 0xb8c0c8 })
+        new THREE.MeshLambertMaterial({ map: makeRunwayTexture(), color: 0x9aa2ac })
       );
       rw.rotation.x = -Math.PI / 2;
       rw.position.set(0, 0.02, -RUNWAY_LEN / 2 + 60);
       scene.add(rw);
 
-      // --- 滑走路灯(両しきいの緑バー) ---
+      // --- 滑走路灯(両しきいの緑バー＋エッジの誘導灯) ---
       const grnMat = new THREE.MeshBasicMaterial({ color: 0x35ff7a });
       for (const z of [TH_NEAR_Z, TH_FAR_Z]) {
         for (let x = -22; x <= 22; x += 11) {
@@ -291,40 +383,26 @@
           l.position.set(x, 0.35, z); scene.add(l);
         }
       }
+      const edgeMat = new THREE.MeshBasicMaterial({ color: 0xfff0c4 }); // 夕闇に映える滑走路エッジライト
+      const edgeGeo = new THREE.BoxGeometry(0.9, 0.6, 0.9);
+      const edges = new THREE.InstancedMesh(edgeGeo, edgeMat, 2 * Math.ceil((TH_NEAR_Z - TH_FAR_Z) / 70) + 4);
+      let ei = 0; const em = new THREE.Matrix4(), eq = new THREE.Quaternion(), es = new THREE.Vector3(1, 1, 1);
+      for (let z = TH_NEAR_Z; z >= TH_FAR_Z; z -= 70) {
+        for (const ex of [-26, 26]) { em.compose(new THREE.Vector3(ex, 0.5, z), eq, es); edges.setMatrixAt(ei++, em); }
+      }
+      edges.count = ei; edges.instanceMatrix.needsUpdate = true; scene.add(edges);
 
-      // --- 景観(InstancedMeshで高密度・低負荷) ---
-      // ビル
-      const buildGeo = new THREE.BoxGeometry(1, 1, 1);
-      const buildMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const buildN = 460;
-      const buildings = new THREE.InstancedMesh(buildGeo, buildMat, buildN);
-      // 木(コーン)
-      const treeGeo = new THREE.ConeGeometry(1, 1, 7);
-      const treeMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const treeN = 520;
-      const trees = new THREE.InstancedMesh(treeGeo, treeMat, treeN);
+      // --- 景観(InstancedMesh。ビルは夕方の窓明かり付き) ---
       const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), col = new THREE.Color();
-      let bi = 0, ti = 0;
-      const placeBuild = (x, z, w, h, d) => {
-        if (bi >= buildN) return;
-        m4.compose(new THREE.Vector3(x, h / 2, z), q, new THREE.Vector3(w, h, d));
-        buildings.setMatrixAt(bi, m4);
-        const t = 0.55 + Math.random() * 0.4; col.setRGB(t * 0.62, t * 0.66, t * 0.74);
-        buildings.setColorAt(bi, col); bi++;
-      };
-      const placeTree = (x, z, r, h, green = 0.45) => {
-        if (ti >= treeN) return;
-        m4.compose(new THREE.Vector3(x, h / 2, z), q, new THREE.Vector3(r, h, r));
-        trees.setMatrixAt(ti, m4);
-        col.setRGB(0.16 + Math.random() * 0.1, green + Math.random() * 0.12, 0.18 + Math.random() * 0.1);
-        trees.setColorAt(ti, col); ti++;
-      };
+      const buildData = [], treeData = [];
+      const addBuild = (x, z, w, h, d) => buildData.push([x, h / 2, z, w, h, d]);
+      const addTree = (x, z, r, h) => treeData.push([x, h / 2, z, r, h]);
       // 沿道(滑走路の両脇)
       for (let z = -40; z > -RUNWAY_LEN - 600; z -= 46) {
         for (const side of [-1, 1]) {
           const x = side * (42 + Math.random() * 170);
-          if (Math.random() < 0.5) placeBuild(x, z, 10 + Math.random() * 20, 12 + Math.random() * 50, 10 + Math.random() * 20);
-          else placeTree(x, z, 8 + Math.random() * 6, 8 + Math.random() * 14);
+          if (Math.random() < 0.5) addBuild(x, z, 10 + Math.random() * 20, 12 + Math.random() * 50, 10 + Math.random() * 20);
+          else addTree(x, z, 8 + Math.random() * 6, 8 + Math.random() * 14);
         }
       }
       // 広域(自由飛行の目印)
@@ -332,16 +410,40 @@
         const a = Math.random() * Math.PI * 2, r = 350 + Math.random() * 2400;
         const x = Math.sin(a) * r, z = cz + Math.cos(a) * r;
         if (Math.abs(x) < 60 && z > -RUNWAY_LEN - 100 && z < 80) continue; // 滑走路上は避ける
-        const rnd = Math.random();
-        if (rnd < 0.42) placeBuild(x, z, 12 + Math.random() * 28, 15 + Math.random() * 80, 12 + Math.random() * 28);
-        else placeTree(x, z, 10 + Math.random() * 8, 12 + Math.random() * 20);
+        if (Math.random() < 0.42) addBuild(x, z, 12 + Math.random() * 28, 15 + Math.random() * 80, 12 + Math.random() * 28);
+        else addTree(x, z, 10 + Math.random() * 8, 12 + Math.random() * 20);
       }
-      buildings.count = bi; trees.count = ti;
-      buildings.instanceMatrix.needsUpdate = trees.instanceMatrix.needsUpdate = true;
-      scene.add(buildings); scene.add(trees);
+      // ビル: 3種の窓明かりテクスチャに振り分けて変化をつける
+      const buildGeo = new THREE.BoxGeometry(1, 1, 1);
+      const variants = [];
+      for (let v = 0; v < 3; v++) {
+        const tex = makeWindowTexture();
+        variants.push({ mat: new THREE.MeshLambertMaterial({ map: tex.map, emissive: 0xffffff, emissiveMap: tex.emissive }), items: [] });
+      }
+      buildData.forEach((b, i) => variants[i % 3].items.push(b));
+      for (const v of variants) {
+        const mesh = new THREE.InstancedMesh(buildGeo, v.mat, v.items.length);
+        v.items.forEach((b, i) => {
+          m4.compose(new THREE.Vector3(b[0], b[1], b[2]), q, new THREE.Vector3(b[3], b[4], b[5]));
+          mesh.setMatrixAt(i, m4);
+          const t = 0.5 + Math.random() * 0.4; col.setRGB(t * 0.5, t * 0.54, t * 0.64); // 夜の外壁(暗め)
+          mesh.setColorAt(i, col);
+        });
+        mesh.instanceMatrix.needsUpdate = true; scene.add(mesh);
+      }
+      // 木(夕方は暗い緑)
+      const treeGeo = new THREE.ConeGeometry(1, 1, 7);
+      const trees = new THREE.InstancedMesh(treeGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), treeData.length);
+      treeData.forEach((t, i) => {
+        m4.compose(new THREE.Vector3(t[0], t[1], t[2]), q, new THREE.Vector3(t[3], t[4], t[3]));
+        trees.setMatrixAt(i, m4);
+        col.setRGB(0.1 + Math.random() * 0.06, 0.2 + Math.random() * 0.1, 0.12 + Math.random() * 0.06);
+        trees.setColorAt(i, col);
+      });
+      trees.instanceMatrix.needsUpdate = true; scene.add(trees);
 
-      // --- 遠景の山 ---
-      const mtnMat = new THREE.MeshLambertMaterial({ color: 0x42688f });
+      // --- 遠景の山(夕方は暗いシルエット) ---
+      const mtnMat = new THREE.MeshLambertMaterial({ color: 0x2a3450 });
       for (let i = 0; i < 24; i++) {
         const a = (i / 24) * Math.PI * 2;
         const r = 2600 + Math.random() * 700;
@@ -351,24 +453,28 @@
         scene.add(m);
       }
 
-      // --- 雲(くぐり抜けられるビルボード) ---
+      // --- 雲(くぐり抜けられるビルボード。夕日で暖色に染まる) ---
       const cloudTex = makeCloudTexture();
       for (let i = 0; i < 70; i++) {
-        const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, transparent: true, depthWrite: false }));
+        const lo = Math.random() < 0.5;
+        const s = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: cloudTex, transparent: true, depthWrite: false,
+          color: lo ? 0xe3b48f : 0x9aa0bd, // 低い雲=夕焼け色 / 高い雲=青み
+        }));
         const a = Math.random() * Math.PI * 2, r = 200 + Math.random() * 3400;
         const sc = 130 + Math.random() * 280;
         s.scale.set(sc, sc * 0.56, 1);
-        s.position.set(Math.sin(a) * r, 150 + Math.random() * 520, cz + Math.cos(a) * r);
-        s.material.opacity = 0.55 + Math.random() * 0.35;
+        s.position.set(Math.sin(a) * r, (lo ? 150 : 380) + Math.random() * 320, cz + Math.cos(a) * r);
+        s.material.opacity = 0.5 + Math.random() * 0.3;
         scene.add(s);
       }
 
-      // --- 太陽(グレア) ---
+      // --- 夕日(低く大きい暖色グレア) ---
       const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: makeSunTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false
+        map: makeSunTexture(), color: 0xffac57, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false
       }));
-      sunSprite.scale.set(620, 620, 1);
-      sunSprite.position.copy(sun.position).multiplyScalar(4.5);
+      sunSprite.scale.set(960, 960, 1);
+      sunSprite.position.copy(sun.position).multiplyScalar(3.0);
       scene.add(sunSprite);
 
       // --- 自機(カメラに固定。窓の外に機首・プロペラ・主翼が見える) ---
@@ -1066,27 +1172,50 @@
       );
     }
 
+    // ================= ローディング画面 =================
+    function showLoading(pct, status) {
+      loadingEl.classList.add("show");
+      if (status != null) loadStatusText.textContent = status;
+      loadFill.style.width = pct + "%";
+      loadPct.textContent = Math.round(pct) + "%";
+    }
+    function hideLoading() { loadingEl.classList.remove("show"); }
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // モデルDLは進捗を取れないので、待っている間バーをじわっと進める
+    async function loadModelWithProgress() {
+      let p = 55;
+      const id = setInterval(() => { p += (90 - p) * 0.08; showLoading(p, "AIモデルを読み込み中"); }, 200);
+      try { await loadModel(); } finally { clearInterval(id); }
+    }
+
     // ================= 起動 =================
     startBtn.addEventListener("click", async () => {
-      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      overlay.classList.add("hidden");
+      showLoading(8, "システム起動中");
       try {
-        if (!three) buildScene();
+        if (!three) { showLoading(22, "コックピットを構築中"); buildScene(); }
         // カメラ＋手検出は任意。失敗してもキーボード操作で続行する
+        showLoading(40, "カメラを起動中");
         try {
           await startCamera();
-          if (!handLandmarker) await loadModel();
+          if (!handLandmarker) await loadModelWithProgress();
           camReady = true;
         } catch (camErr) {
           console.warn("カメラ無しで起動（キーボード操作）:", camErr?.message || camErr);
           camReady = false;
         }
+        showLoading(94, "離陸準備");
         startAudio();
         resetFlight();
-        overlay.classList.add("hidden");
+        showLoading(100, "Ready for departure");
+        await wait(450);
+        hideLoading();
         state = "playing"; lastTime = performance.now();
         requestAnimationFrame(loop);
       } catch (e) {
         console.error(e);
+        hideLoading();
         overlay.classList.remove("hidden");
         overlay.innerHTML = '<h1>HAND&nbsp;COCKPIT&nbsp;✈️</h1><div id="err"></div><button class="btn" id="retry">もう一度</button>';
         overlay.querySelector("#err").textContent =
