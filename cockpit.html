@@ -69,7 +69,7 @@
         <div>🛫 <b>左手＝スロットル</b><br>画面左の<b>レバーを✊握って</b> 上げる＝加速 / 下げる＝減速。<br>離すとその位置で保持。</div>
         <div>🕹️ <b>両手＝操縦桿</b><br><b>✊両手で握ってステアリングのように傾け＝旋回</b>、<b>手前に引く＝機首上げ</b> / 押す＝機首下げ。<br>片手でも操縦可。離すと中立。</div>
       </div>
-      <p>画面に映る<b>あなたの手(✊/🖐)</b>でコックピットを操作。<br>フルスロットルで加速 → <b>Vr</b> 超で操縦桿を引いて <b>ROTATE</b> → 高度150mで離陸 → あとは <b>自由飛行</b>！失速注意。</p>
+      <p>画面に映る<b>あなたの手(✊/🖐)</b>でコックピットを操作。<br>フルスロットルで加速 → <b>Vr</b> 超で操縦桿を引いて <b>ROTATE</b> → 高度150mで離陸 → <b>自由飛行</b>。<br>旋回して<b>滑走路へ帰投</b>、<b>PAPI／ND</b>を見ながら降下して <b>🛬 着陸</b>を狙え！失速・ハードランディング注意。</p>
       <button class="btn" id="startBtn">フライト開始</button>
       <p class="keys">カメラが無い時はキーボードでも操作可：W/S＝スロットル, ↑/↓＝ピッチ, ←/→＝バンク</p>
     </div>
@@ -111,6 +111,7 @@
     let speed, alt, vspeed, pitch, airborne, stalled, throttle, elevator;
     let heading, bank, bankTarget, posX, posZ, everAirborne, freeFlight;
     let maxSpeed, maxAlt, tStart, callout, calloutT, shake;
+    let rollout, touchGrade; // 着陸後の地上滑走 / 接地評価
 
     // レバー(正規化スクリーン縦位置 y: 0=上, 1=下)
     const throttleLever = { pos: 0.78, min: 0.30, max: 0.78, grip: false };
@@ -123,6 +124,119 @@
     const MAX_BANK = 46 * Math.PI / 180; // 最大バンク角
     const TURN_GAIN = 1.7;     // 旋回の効きを強める係数
     const keys = {};
+
+    // ================= 着陸パラメータ =================
+    const GLIDE_DEG = 3.0;           // 標準グライドスロープ角
+    const RWY_HALF_W = 22;           // 着陸OKとなるセンターラインからの許容半幅 m
+    const TD_VS_GREASE = 1.0;        // この降下率(m/s)未満なら ✨グリーサー
+    const TD_VS_GOOD = 2.2, TD_VS_FIRM = 3.4, TD_VS_MAX = 4.6; // 接地降下率の段階(超で墜落)
+    const ALIGN_TOL = 28 * Math.PI / 180; // 滑走路軸との許容ヘディング差
+    const BRAKE_DECEL = 7.5;         // ロールアウト時の制動 m/s^2
+    // 滑走路の世界座標(着陸判定・誘導・ND用)
+    const RWY_X = 0;
+    const TH_NEAR_Z = -8;            // 出発端しきい(ピアノキー)
+    const TH_FAR_Z = -RUNWAY_LEN;    // 反対端しきい
+    const RWY_Z_HI = 40, RWY_Z_LO = -RUNWAY_LEN - 40; // ストリップのZ範囲
+
+    // ================= 手続きテクスチャ =================
+    function makeGrassTexture() {
+      const c = document.createElement("canvas"); c.width = c.height = 256;
+      const x = c.getContext("2d");
+      x.fillStyle = "#4f7a3a"; x.fillRect(0, 0, 256, 256);
+      for (let i = 0; i < 4200; i++) {
+        const g = 90 + Math.random() * 70;
+        x.fillStyle = `rgba(${40 + Math.random() * 40 | 0},${g | 0},${40 + Math.random() * 30 | 0},${0.05 + Math.random() * 0.12})`;
+        const s = 1 + (Math.random() * 3 | 0);
+        x.fillRect(Math.random() * 256, Math.random() * 256, s, s);
+      }
+      const t = new THREE.CanvasTexture(c);
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      return t;
+    }
+
+    function makeRunwayTexture() {
+      const c = document.createElement("canvas"); c.width = 128; c.height = 1024;
+      const x = c.getContext("2d");
+      const g = x.createLinearGradient(0, 0, 128, 0);
+      g.addColorStop(0, "#2b2f36"); g.addColorStop(0.5, "#3a3f48"); g.addColorStop(1, "#2b2f36");
+      x.fillStyle = g; x.fillRect(0, 0, 128, 1024);
+      for (let i = 0; i < 2600; i++) {
+        x.fillStyle = `rgba(${20 + Math.random() * 40 | 0},${20 + Math.random() * 40 | 0},${24 + Math.random() * 40 | 0},.25)`;
+        x.fillRect(Math.random() * 128, Math.random() * 1024, 2, 2);
+      }
+      x.fillStyle = "#e6e8ea";
+      x.fillRect(10, 0, 5, 1024); x.fillRect(113, 0, 5, 1024);     // 端線
+      for (let y = 50; y < 1024 - 50; y += 46) x.fillRect(61, y, 5, 26); // センター破線
+      for (const yb of [14, 1024 - 14 - 46]) for (let k = 0; k < 5; k++) x.fillRect(24 + k * 17, yb, 11, 46); // ピアノキー
+      x.fillStyle = "#f2f2f2"; x.font = "bold 56px sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+      x.save(); x.translate(63, 118); x.fillText("36", 0, 0); x.restore();
+      x.save(); x.translate(63, 1024 - 118); x.rotate(Math.PI); x.fillText("18", 0, 0); x.restore();
+      const t = new THREE.CanvasTexture(c); t.anisotropy = 8;
+      return t;
+    }
+
+    function makeCloudTexture() {
+      const c = document.createElement("canvas"); c.width = c.height = 128;
+      const x = c.getContext("2d");
+      for (let i = 0; i < 16; i++) {
+        const px = 24 + Math.random() * 80, py = 36 + Math.random() * 60, r = 12 + Math.random() * 30;
+        const g = x.createRadialGradient(px, py, 0, px, py, r);
+        g.addColorStop(0, "rgba(255,255,255,.9)"); g.addColorStop(1, "rgba(255,255,255,0)");
+        x.fillStyle = g; x.beginPath(); x.arc(px, py, r, 0, Math.PI * 2); x.fill();
+      }
+      return new THREE.CanvasTexture(c);
+    }
+
+    function makeSunTexture() {
+      const c = document.createElement("canvas"); c.width = c.height = 128;
+      const x = c.getContext("2d");
+      const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+      g.addColorStop(0, "rgba(255,252,236,1)"); g.addColorStop(0.22, "rgba(255,240,200,.85)"); g.addColorStop(1, "rgba(255,228,176,0)");
+      x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+      return new THREE.CanvasTexture(c);
+    }
+
+    // 一人称で窓の外に見える「自機」(機首カウル＋回るプロペラ＋主翼)
+    function buildAircraft() {
+      const g = new THREE.Group();
+      const bodyMat = new THREE.MeshLambertMaterial({ color: 0xdfe6f0 });
+      const darkMat = new THREE.MeshLambertMaterial({ color: 0x2a3340 });
+      const EY = -1.95; // 視点より下(座面の前)に機体を配置
+      // 機首カウル(前方へ細るコーン状。低めに置いてグレアシールド上に覗かせる)
+      const nose = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.8, 3.6, 22), bodyMat);
+      nose.rotation.x = Math.PI / 2; nose.position.set(0, EY, -3.7); g.add(nose);
+      const cowl = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.44, 0.35, 22), darkMat);
+      cowl.rotation.x = Math.PI / 2; cowl.position.set(0, EY, -5.35); g.add(cowl);
+      const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.6, 18), darkMat);
+      spinner.rotation.x = -Math.PI / 2; spinner.position.set(0, EY, -5.7); g.add(spinner);
+      // プロペラ(ブレード＋ブラー用ディスク)
+      const blades = new THREE.Group();
+      for (let b = 0; b < 2; b++) {
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.14, 3.4, 0.05), darkMat);
+        blade.rotation.z = b * Math.PI / 2; blades.add(blade);
+      }
+      blades.position.set(0, EY, -5.72); g.add(blades);
+      const prop = new THREE.Mesh(new THREE.CircleGeometry(1.75, 32),
+        new THREE.MeshBasicMaterial({ color: 0x161a20, transparent: true, opacity: 0.1, side: THREE.DoubleSide }));
+      prop.position.set(0, EY, -5.78); g.add(prop);
+      // 主翼(低翼・前方へ張り出し・上反角・後退)
+      function wing(side) {
+        const w = new THREE.Group();
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(8.4, 0.16, 2.1), bodyMat);
+        panel.position.set(side * 4.9, 0, 0); w.add(panel);
+        const tip = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.8, 1.5), bodyMat);
+        tip.position.set(side * 8.9, 0.38, 0); w.add(tip);
+        const nav = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8),
+          new THREE.MeshBasicMaterial({ color: side < 0 ? 0xff3344 : 0x33ff66 }));
+        nav.position.set(side * 9.0, 0.38, -0.7); w.add(nav);
+        w.position.set(side * 0.55, EY + 0.45, -4.2);
+        w.rotation.z = side * 0.12;  // 翼端上げ(上反角)
+        w.rotation.y = side * 0.14;  // 翼端後退
+        return w;
+      }
+      g.add(wing(-1)); g.add(wing(1));
+      return { group: g, prop, blades };
+    }
 
     // ================= 3Dシーン構築 =================
     function buildScene() {
@@ -148,89 +262,88 @@
       sun.position.set(-600, 900, 500);
       scene.add(sun);
 
-      // --- 地面 ---
+      const cz = -RUNWAY_LEN / 2;
+
+      // --- 地面(手続き草地テクスチャ) ---
+      const grassTex = makeGrassTexture(); grassTex.repeat.set(70, 70);
       const ground = new THREE.Mesh(
         new THREE.PlaneGeometry(12000, 12000),
-        new THREE.MeshLambertMaterial({ color: 0x4f7a3a })
+        new THREE.MeshLambertMaterial({ map: grassTex, color: 0xcfe0b8 })
       );
       ground.rotation.x = -Math.PI / 2;
-      ground.position.z = -RUNWAY_LEN / 2;
+      ground.position.z = cz;
       scene.add(ground);
 
-      // --- 滑走路 ---
+      // --- 滑走路(マーキング・番号を焼き込んだテクスチャ) ---
       const rw = new THREE.Mesh(
         new THREE.PlaneGeometry(50, RUNWAY_LEN + 300),
-        new THREE.MeshLambertMaterial({ color: 0x32363d })
+        new THREE.MeshLambertMaterial({ map: makeRunwayTexture(), color: 0xb8c0c8 })
       );
       rw.rotation.x = -Math.PI / 2;
       rw.position.set(0, 0.02, -RUNWAY_LEN / 2 + 60);
       scene.add(rw);
 
-      // --- 滑走路の白線(両端 + センターダッシュ) ---
-      const white = new THREE.MeshBasicMaterial({ color: 0xffffff });
-      for (const ex of [-23, 23]) {
-        const edge = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.05, RUNWAY_LEN + 200), white);
-        edge.position.set(ex, 0.05, -RUNWAY_LEN / 2 + 60);
-        scene.add(edge);
-      }
-      for (let z = 0; z > -RUNWAY_LEN; z -= 26) {
-        const dash = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.05, 8), white);
-        dash.position.set(0, 0.05, z - 20);
-        scene.add(dash);
-      }
-      // スレッショルドマーク(始点のピアノキー)
-      for (let i = -3; i <= 3; i++) {
-        const bar = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.05, 14), white);
-        bar.position.set(i * 5, 0.05, -8);
-        scene.add(bar);
+      // --- 滑走路灯(両しきいの緑バー) ---
+      const grnMat = new THREE.MeshBasicMaterial({ color: 0x35ff7a });
+      for (const z of [TH_NEAR_Z, TH_FAR_Z]) {
+        for (let x = -22; x <= 22; x += 11) {
+          const l = new THREE.Mesh(new THREE.BoxGeometry(3, 0.4, 0.8), grnMat);
+          l.position.set(x, 0.35, z); scene.add(l);
+        }
       }
 
-      // --- 滑走路灯/標識 + 沿道の景観 ---
-      const treeMat = new THREE.MeshLambertMaterial({ color: 0x2f6b34 });
-      const buildMat = new THREE.MeshLambertMaterial({ color: 0x8a8f9c });
-      for (let z = -40; z > -RUNWAY_LEN - 600; z -= 60) {
+      // --- 景観(InstancedMeshで高密度・低負荷) ---
+      // ビル
+      const buildGeo = new THREE.BoxGeometry(1, 1, 1);
+      const buildMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      const buildN = 460;
+      const buildings = new THREE.InstancedMesh(buildGeo, buildMat, buildN);
+      // 木(コーン)
+      const treeGeo = new THREE.ConeGeometry(1, 1, 7);
+      const treeMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      const treeN = 520;
+      const trees = new THREE.InstancedMesh(treeGeo, treeMat, treeN);
+      const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), col = new THREE.Color();
+      let bi = 0, ti = 0;
+      const placeBuild = (x, z, w, h, d) => {
+        if (bi >= buildN) return;
+        m4.compose(new THREE.Vector3(x, h / 2, z), q, new THREE.Vector3(w, h, d));
+        buildings.setMatrixAt(bi, m4);
+        const t = 0.55 + Math.random() * 0.4; col.setRGB(t * 0.62, t * 0.66, t * 0.74);
+        buildings.setColorAt(bi, col); bi++;
+      };
+      const placeTree = (x, z, r, h, green = 0.45) => {
+        if (ti >= treeN) return;
+        m4.compose(new THREE.Vector3(x, h / 2, z), q, new THREE.Vector3(r, h, r));
+        trees.setMatrixAt(ti, m4);
+        col.setRGB(0.16 + Math.random() * 0.1, green + Math.random() * 0.12, 0.18 + Math.random() * 0.1);
+        trees.setColorAt(ti, col); ti++;
+      };
+      // 沿道(滑走路の両脇)
+      for (let z = -40; z > -RUNWAY_LEN - 600; z -= 46) {
         for (const side of [-1, 1]) {
-          const x = side * (40 + Math.random() * 160);
-          if (Math.random() < 0.5) {
-            const h = 12 + Math.random() * 50;
-            const b = new THREE.Mesh(new THREE.BoxGeometry(10 + Math.random() * 20, h, 10 + Math.random() * 20), buildMat);
-            b.position.set(x, h / 2, z);
-            scene.add(b);
-          } else {
-            const h = 8 + Math.random() * 14;
-            const t = new THREE.Mesh(new THREE.ConeGeometry(4 + Math.random() * 3, h, 7), treeMat);
-            t.position.set(x, h / 2, z);
-            scene.add(t);
-          }
+          const x = side * (42 + Math.random() * 170);
+          if (Math.random() < 0.5) placeBuild(x, z, 10 + Math.random() * 20, 12 + Math.random() * 50, 10 + Math.random() * 20);
+          else placeTree(x, z, 8 + Math.random() * 6, 8 + Math.random() * 14);
         }
       }
-
-      // --- 自由飛行用に、広いエリアへ景観を散らす(飛び回るときの目印) ---
-      const cz = -RUNWAY_LEN / 2;
-      for (let i = 0; i < 140; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const r = 350 + Math.random() * 2300;
+      // 広域(自由飛行の目印)
+      for (let i = 0; i < 520; i++) {
+        const a = Math.random() * Math.PI * 2, r = 350 + Math.random() * 2400;
         const x = Math.sin(a) * r, z = cz + Math.cos(a) * r;
-        if (Math.abs(x) < 60 && z > -RUNWAY_LEN - 100 && z < 80) continue; // 滑走路の上は避ける
-        if (Math.random() < 0.35) {
-          const h = 20 + Math.random() * 120;        // 丘
-          const hill = new THREE.Mesh(new THREE.ConeGeometry(60 + Math.random() * 140, h, 8), new THREE.MeshLambertMaterial({ color: 0x4a7a40 }));
-          hill.position.set(x, h / 2 - 10, z); scene.add(hill);
-        } else if (Math.random() < 0.5) {
-          const h = 15 + Math.random() * 70;          // ビル
-          const b = new THREE.Mesh(new THREE.BoxGeometry(12 + Math.random() * 26, h, 12 + Math.random() * 26), buildMat);
-          b.position.set(x, h / 2, z); scene.add(b);
-        } else {
-          const h = 10 + Math.random() * 18;          // 木立
-          const t = new THREE.Mesh(new THREE.ConeGeometry(5 + Math.random() * 4, h, 7), treeMat);
-          t.position.set(x, h / 2, z); scene.add(t);
-        }
+        if (Math.abs(x) < 60 && z > -RUNWAY_LEN - 100 && z < 80) continue; // 滑走路上は避ける
+        const rnd = Math.random();
+        if (rnd < 0.42) placeBuild(x, z, 12 + Math.random() * 28, 15 + Math.random() * 80, 12 + Math.random() * 28);
+        else placeTree(x, z, 10 + Math.random() * 8, 12 + Math.random() * 20);
       }
+      buildings.count = bi; trees.count = ti;
+      buildings.instanceMatrix.needsUpdate = trees.instanceMatrix.needsUpdate = true;
+      scene.add(buildings); scene.add(trees);
 
       // --- 遠景の山 ---
       const mtnMat = new THREE.MeshLambertMaterial({ color: 0x42688f });
-      for (let i = 0; i < 22; i++) {
-        const a = (i / 22) * Math.PI * 2;
+      for (let i = 0; i < 24; i++) {
+        const a = (i / 24) * Math.PI * 2;
         const r = 2600 + Math.random() * 700;
         const h = 300 + Math.random() * 500;
         const m = new THREE.Mesh(new THREE.ConeGeometry(300 + Math.random() * 300, h, 6), mtnMat);
@@ -238,7 +351,32 @@
         scene.add(m);
       }
 
-      three = { renderer, scene, camera };
+      // --- 雲(くぐり抜けられるビルボード) ---
+      const cloudTex = makeCloudTexture();
+      for (let i = 0; i < 70; i++) {
+        const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, transparent: true, depthWrite: false }));
+        const a = Math.random() * Math.PI * 2, r = 200 + Math.random() * 3400;
+        const sc = 130 + Math.random() * 280;
+        s.scale.set(sc, sc * 0.56, 1);
+        s.position.set(Math.sin(a) * r, 150 + Math.random() * 520, cz + Math.cos(a) * r);
+        s.material.opacity = 0.55 + Math.random() * 0.35;
+        scene.add(s);
+      }
+
+      // --- 太陽(グレア) ---
+      const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: makeSunTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false
+      }));
+      sunSprite.scale.set(620, 620, 1);
+      sunSprite.position.copy(sun.position).multiplyScalar(4.5);
+      scene.add(sunSprite);
+
+      // --- 自機(カメラに固定。窓の外に機首・プロペラ・主翼が見える) ---
+      const ac = buildAircraft();
+      camera.add(ac.group);
+      scene.add(camera); // カメラの子(自機)を描画させる
+
+      three = { renderer, scene, camera, prop: ac.prop, blades: ac.blades };
       resize();
     }
 
@@ -338,6 +476,7 @@
       stalled = false; throttle = 0; elevator = 0;
       heading = 0; bank = 0; bankTarget = 0; posX = 0; posZ = 0; everAirborne = false; freeFlight = false;
       maxSpeed = 0; maxAlt = 0; tStart = performance.now(); callout = ""; calloutT = 0; shake = 0;
+      rollout = false; touchGrade = "";
       throttleLever.pos = throttleLever.max; throttleLever.grip = false;
       yoke.grip = false; yoke.mode = "none"; yoke.hands = []; yoke.refX = 0.5;
     }
@@ -347,6 +486,49 @@
     function clOf(aoa) {
       if (aoa <= AOA_CRIT) return Math.max(-0.35, 0.092 * aoa);
       return Math.max(0.35, 1.2 - 0.09 * (aoa - AOA_CRIT)); // 失速後は揚力低下
+    }
+
+    // 着陸進入の幾何(どちらのしきいに向かっているか・グライドスロープ・横偏差)
+    function approachInfo() {
+      const h = ((heading % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      const dNear = Math.min(h, Math.PI * 2 - h);   // ヘディング0(=-Z着陸)からの差
+      const dFar = Math.abs(h - Math.PI);           // ヘディングπ(=+Z着陸)からの差
+      const useNear = dNear <= dFar;
+      const thZ = useNear ? TH_NEAR_Z : TH_FAR_Z;
+      const along = useNear ? (posZ - thZ) : (thZ - posZ);     // 正=まだしきい手前
+      const right = (useNear ? 1 : -1) * (posX - RWY_X);        // 機の右方向への横偏差(+右/-左)
+      const idealAlt = Math.tan(GLIDE_DEG * Math.PI / 180) * Math.max(0, along);
+      return { useNear, thZ, along, right, idealAlt, align: useNear ? dNear : dFar };
+    }
+
+    // 接地処理(離陸達成後の滑走路接地を着陸として判定)
+    function touchdown() {
+      const vs = -vspeed; // 降下率(正)
+      if (!freeFlight) { // 離陸前のホップはタッチ＆ゴー継続
+        alt = 0; vspeed = 0; airborne = false; pitch = Math.min(pitch, 3); return;
+      }
+      const a = approachInfo();
+      const onRunway = Math.abs(posX - RWY_X) < RWY_HALF_W && posZ < RWY_Z_HI && posZ > RWY_Z_LO;
+      if (!onRunway) return crash("場外接地 — 滑走路を外した");
+      if (a.align > ALIGN_TOL) return crash("進入不良 — 滑走路に正対していない");
+      if (vs > TD_VS_MAX || Math.abs(bank) > 22 * Math.PI / 180) return crash("ハードランディング 💥");
+      // 接地成功 → ロールアウトへ
+      alt = 0; vspeed = 0; airborne = false; rollout = true;
+      pitch = Math.max(0, Math.min(pitch, 6)); bank = 0;
+      touchGrade = vs < TD_VS_GREASE ? "GREASER ✨" : vs < TD_VS_GOOD ? "GOOD" : vs < TD_VS_FIRM ? "FIRM" : "HARD (OK)";
+      setCallout("TOUCHDOWN — " + touchGrade, 2.4);
+    }
+
+    function landedOverlay() {
+      state = "over"; updateAudio();
+      const sec = ((performance.now() - tStart) / 1000).toFixed(1);
+      endOverlay(
+        '<h1>🛬 LANDED!</h1><p>帰投・着陸成功！接地の評価は <b>' + touchGrade + '</b>。</p>' +
+        '<div class="stats"><div>接地評価<b>' + touchGrade + '</b></div>' +
+        '<div>飛行時間<b>' + sec + 's</b></div>' +
+        '<div>最高高度<b>' + Math.round(maxAlt) + ' m</b></div></div>' +
+        '<button class="btn" id="again">もう一度</button>'
+      );
     }
 
     // 操作の更新(仮想の手で各コントロールを✊掴む。操縦桿は両手でステアリングのように)
@@ -430,21 +612,27 @@
         alt += vspeed * dt;
         // 旋回:coordinated turn。バンク角と速度から方位が変化する
         heading += TURN_GAIN * (G * Math.tan(bank) / Math.max(25, speed)) * dt;
-        if (alt <= 0) {
-          if (vspeed < -4.5) return crash("墜落 — CRASH");
-          alt = 0; vspeed = 0; airborne = false; pitch = Math.min(pitch, 3); // タッチ＆ゴー
-        }
+        if (alt <= 0) { touchdown(); if (state !== "playing") return; }
       } else if (lift > G && pitch > 1) {
         airborne = true; everAirborne = true; vspeed = (lift - G) * dt;
-        setCallout("LIFT OFF ✈️", 1.6);
+        if (rollout) { rollout = false; setCallout("GO AROUND ↑ 復行", 1.4); }
+        else setCallout("LIFT OFF ✈️", 1.6);
       }
 
-      // 水平方向
+      // 水平方向(着陸後のロールアウトは制動が掛かる)
       const induced = airborne ? 0.02 * Math.abs(aoa) : 0;
       const gravComp = airborne ? G * Math.sin(flightPath) : 0;
       const friction = onGround ? ROLL_FRICTION : 0;
-      speed += (thrust - DRAG_K * speed * speed - induced - gravComp - friction) * dt;
+      const brake = (onGround && rollout) ? BRAKE_DECEL : 0;
+      speed += (thrust - DRAG_K * speed * speed - induced - gravComp - friction - brake) * dt;
       speed = Math.max(0, speed);
+
+      // ロールアウト:停止で着陸成功 / 滑走路を逸脱したらオーバーラン
+      if (rollout && !airborne) {
+        if (speed < 6) return landedOverlay();
+        const off = Math.abs(posX - RWY_X) > RWY_HALF_W + 8 || posZ < RWY_Z_LO || posZ > RWY_Z_HI + 20;
+        if (off && speed > 12) return crash("オーバーラン — 停止できず逸脱");
+      }
 
       // 前進(方位に沿ってワールド座標を移動)
       const vFwd = speed * Math.cos(flightPath);
@@ -473,6 +661,9 @@
         c.position.x += (Math.random() - 0.5) * shake * 0.04;
         c.position.y += (Math.random() - 0.5) * shake * 0.04;
       }
+      // プロペラ:スロットルで回転速度・ディスクの見え方が変わる
+      three.blades.rotation.z += 0.6 + throttle * 2.4;
+      three.prop.material.opacity = 0.08 + throttle * 0.16;
     }
 
     function loop(now) {
@@ -542,6 +733,9 @@
       // バンク計 + 方位(上部)
       drawBankHeading(W, H, hudCol);
 
+      // 着陸進入の誘導(PAPI＋グライドスロープ)
+      drawApproach(W, H);
+
       // コールアウト
       if (calloutT > 0 && callout) {
         hctx.textAlign = "center";
@@ -572,9 +766,10 @@
       hctx.strokeStyle = "rgba(150,170,200,.18)"; hctx.lineWidth = 2;
       hctx.beginPath(); hctx.moveTo(0, dashY + 18); hctx.quadraticCurveTo(W * 0.5, dashY - 14, W, dashY + 18); hctx.stroke();
 
-      drawAttitude(W * 0.27, dashY + (H - dashY) * 0.5, (H - dashY) * 0.34);
+      drawAttitude(W * 0.20, dashY + (H - dashY) * 0.5, (H - dashY) * 0.34);
+      drawND(W * 0.72, dashY + (H - dashY) * 0.5, (H - dashY) * 0.34);
       if (camReady) {
-        drawPIP(hands, W - 240, dashY + 22, 222, H - dashY - 40);
+        drawPIP(hands, W - 232, dashY + 22, 214, H - dashY - 40);
       } else {
         hctx.fillStyle = "#8b93a7"; hctx.font = "700 12px ui-monospace, monospace"; hctx.textAlign = "right";
         hctx.fillText("⌨ KEYBOARD: W/S=スロットル ↑↓=ピッチ ←→=バンク", W - 24, dashY + 36);
@@ -779,6 +974,70 @@
       }
       hctx.fillStyle = "#cfd6e6"; hctx.font = "700 10px ui-monospace, monospace"; hctx.textAlign = "center";
       hctx.fillText("✊握って操作", x + w / 2, y + h + 13);
+      hctx.textAlign = "left";
+    }
+
+    // 着陸進入の誘導(PAPI 4灯＋グライドスロープ＋横偏差)
+    function drawApproach(W, H) {
+      if (!freeFlight || rollout) return;
+      const a = approachInfo();
+      if (a.along <= 30 || a.align > 50 * Math.PI / 180) return; // 進入していない時は非表示
+      const cx = W / 2, cy = H * 0.50;
+      const acAng = Math.atan2(alt, Math.max(1, a.along)) * 180 / Math.PI; // 自機の見かけ進入角
+      const refs = [GLIDE_DEG - 0.5, GLIDE_DEG - 0.17, GLIDE_DEG + 0.17, GLIDE_DEG + 0.5];
+      for (let i = 0; i < 4; i++) {
+        const white = acAng > refs[i];
+        hctx.beginPath(); hctx.arc(cx - 33 + i * 22, cy, 7, 0, Math.PI * 2);
+        hctx.fillStyle = white ? "#eef4ff" : "#ff3b54"; hctx.fill();
+        hctx.lineWidth = 1.5; hctx.strokeStyle = "rgba(0,0,0,.45)"; hctx.stroke();
+      }
+      const dev = acAng - GLIDE_DEG;
+      const gl = dev > 0.45 ? "HIGH ▼ 機首下げ" : dev < -0.45 ? "LOW ▲ 機首上げ" : "ON GLIDE";
+      const glCol = Math.abs(dev) < 0.45 ? "#6dffba" : "#ffb347";
+      const distTxt = a.along > 1000 ? (a.along / 1000).toFixed(1) + "km" : Math.round(a.along) + "m";
+      const m = Math.round(Math.abs(a.right));
+      const cross = m < 8 ? "CENTER" : (a.right > 0 ? "R " + m + "m ◀寄せ" : "L " + m + "m 寄せ▶");
+      hctx.textAlign = "center";
+      hctx.fillStyle = "#cfe6ff"; hctx.font = "800 14px ui-monospace, monospace";
+      hctx.fillText("⟜ RWY  " + distTxt, cx, cy - 18);
+      hctx.fillStyle = glCol; hctx.fillText(gl, cx, cy + 30);
+      hctx.fillStyle = m < 8 ? "#6dffba" : "#ffd166"; hctx.font = "700 12px ui-monospace, monospace";
+      hctx.fillText(cross, cx, cy + 46);
+      hctx.textAlign = "left";
+    }
+
+    // ナビ表示(ND): ヘディングアップで滑走路と自機の位置関係を見せる(帰投用)
+    function drawND(cx, cy, R) {
+      hctx.save();
+      hctx.beginPath(); hctx.arc(cx, cy, R, 0, Math.PI * 2);
+      hctx.fillStyle = "rgba(8,12,20,.92)"; hctx.fill();
+      hctx.lineWidth = 2.5; hctx.strokeStyle = "#2b3547"; hctx.stroke();
+      hctx.beginPath(); hctx.arc(cx, cy, R, 0, Math.PI * 2); hctx.clip();
+      const RANGE = 2200, sH = Math.sin(heading), cH = Math.cos(heading);
+      const proj = (wx, wz) => {
+        const dx = wx - posX, dz = wz - posZ;
+        const fwd = dx * sH + dz * (-cH), rgt = dx * cH + dz * sH;
+        return [cx + rgt / RANGE * R, cy - fwd / RANGE * R];
+      };
+      hctx.strokeStyle = "rgba(120,140,170,.22)"; hctx.lineWidth = 1;
+      hctx.beginPath(); hctx.arc(cx, cy, R * 0.5, 0, Math.PI * 2); hctx.stroke();
+      const [ax, ay] = proj(RWY_X, TH_NEAR_Z), [bx, by] = proj(RWY_X, TH_FAR_Z);
+      hctx.strokeStyle = "#6dffba"; hctx.lineWidth = 4; hctx.lineCap = "round";
+      hctx.beginPath(); hctx.moveTo(ax, ay); hctx.lineTo(bx, by); hctx.stroke();
+      hctx.fillStyle = "#35ff7a";
+      hctx.beginPath(); hctx.arc(ax, ay, 3.5, 0, Math.PI * 2); hctx.fill();
+      hctx.beginPath(); hctx.arc(bx, by, 3.5, 0, Math.PI * 2); hctx.fill();
+      hctx.restore();
+      // 自機(中央・上向き)
+      hctx.fillStyle = "#ffd14a";
+      hctx.beginPath(); hctx.moveTo(cx, cy - 8); hctx.lineTo(cx - 6, cy + 7); hctx.lineTo(cx + 6, cy + 7); hctx.closePath(); hctx.fill();
+      // 北(ヘディングで回転)
+      const Nx = cx - sH * (R - 11), Ny = cy - cH * (R - 11);
+      hctx.fillStyle = "#9fb2cc"; hctx.font = "800 11px ui-monospace, monospace"; hctx.textAlign = "center"; hctx.textBaseline = "middle";
+      hctx.fillText("N", Nx, Ny);
+      hctx.fillStyle = "#8b93a7"; hctx.font = "700 9px ui-monospace, monospace"; hctx.textBaseline = "alphabetic";
+      hctx.fillText("ND", cx - R + 12, cy - R + 14);
+      hctx.fillStyle = "#6dffba"; hctx.fillText("RWY", cx + R - 22, cy + R - 8);
       hctx.textAlign = "left";
     }
 
