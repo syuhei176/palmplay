@@ -1,0 +1,1339 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>百鬼夜行 HYAKKI-YAGYŪ — 全身二刀流で往く亡者の長屋街（オンレール）</title>
+  <style>
+    :root { --bg:#0a0a12; --accent:#ffce54; --blade:#eafcff; --danger:#ff4d6d; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html, body {
+      height:100%;
+      background:radial-gradient(circle at 50% 8%, #1a2438 0%, #120e1c 48%, var(--bg) 100%);
+      color:#fff;
+      font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow:hidden; -webkit-user-select:none; user-select:none;
+    }
+    #stage { position:relative; width:100vw; height:100vh; overflow:hidden; }
+    #cam { display:none; }
+    #bg, #scene, #fx { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
+    #bg { z-index:1; } #scene { z-index:2; } #fx { z-index:3; }
+
+    #hud {
+      position:absolute; z-index:5; top:0; left:0; right:0;
+      display:flex; justify-content:space-between; align-items:flex-start;
+      padding:18px 24px; pointer-events:none; font-variant-numeric:tabular-nums;
+    }
+    #score { font-size:34px; font-weight:800; text-shadow:0 2px 12px rgba(0,0,0,.6); }
+    #score small { font-size:14px; font-weight:600; opacity:.7; display:block; letter-spacing:.15em; }
+    #right { text-align:right; }
+    #lives { font-size:28px; letter-spacing:3px; text-shadow:0 2px 12px rgba(0,0,0,.6); }
+    #wave { font-size:14px; font-weight:700; opacity:.8; letter-spacing:.12em; margin-top:4px; }
+    #area {
+      position:absolute; z-index:5; top:0; left:50%; transform:translateX(-50%);
+      margin-top:18px; text-align:center; pointer-events:none;
+      font-size:13px; font-weight:700; letter-spacing:.22em; opacity:.0;
+      text-shadow:0 2px 10px rgba(0,0,0,.6); transition:opacity .4s;
+    }
+    #area.show { opacity:.85; }
+    #cue {
+      position:absolute; z-index:5; top:74px; left:50%; transform:translateX(-50%);
+      font-size:20px; font-weight:800; letter-spacing:.12em;
+      padding:6px 18px; border-radius:999px; background:rgba(0,0,0,.35);
+      text-shadow:0 2px 12px rgba(0,0,0,.6); white-space:nowrap;
+      transition:color .15s, background .15s; pointer-events:none;
+    }
+    #cue.strike { color:#1a1208; background:var(--accent); }
+    #cue.guard { color:#cfe6ff; background:rgba(70,120,200,.4); }
+    #cue.alert { color:#fff; background:rgba(255,77,109,.5); }
+    #kiai {
+      position:absolute; z-index:5; top:116px; left:50%;
+      transform:translateX(-50%) scale(.6); font-size:56px; font-weight:900;
+      color:var(--accent); text-shadow:0 0 22px rgba(255,206,84,.8);
+      opacity:0; transition:opacity .12s, transform .12s; pointer-events:none;
+    }
+    #overlay {
+      position:absolute; inset:0; z-index:10;
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      gap:20px; background:rgba(8,8,14,.84); backdrop-filter:blur(6px);
+      text-align:center; padding:24px;
+    }
+    #overlay.hidden { display:none; }
+    #overlay h1 {
+      font-size:clamp(38px, 7.6vw, 80px); font-weight:900; letter-spacing:.06em;
+      background:linear-gradient(120deg, var(--accent), #ff8b46);
+      -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+    }
+    #overlay h1.clear { background:linear-gradient(120deg, #7af7c0, #43e97b); -webkit-background-clip:text; background-clip:text; }
+    #overlay p { font-size:17px; line-height:1.8; opacity:.88; max-width:500px; }
+    #overlay .big { font-size:64px; font-weight:900; }
+    .setup {
+      font-size:13.5px; line-height:1.7; opacity:.7; max-width:500px;
+      border:1px solid rgba(255,255,255,.14); border-radius:14px; padding:14px 18px; background:rgba(255,255,255,.04);
+    }
+    .setup b { color:var(--accent); font-weight:700; }
+    .btn {
+      pointer-events:auto; cursor:pointer; border:none; font:inherit;
+      font-weight:800; font-size:22px; color:#1a1208;
+      background:linear-gradient(120deg, var(--accent), #ff8b46);
+      padding:16px 44px; border-radius:999px; box-shadow:0 8px 30px rgba(255,206,84,.35);
+      transition:transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform:translateY(-2px); box-shadow:0 12px 38px rgba(255,206,84,.5); }
+    .btn:active { transform:translateY(0); }
+    .spinner { width:46px; height:46px; border:4px solid rgba(255,255,255,.2); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    #err { color:var(--danger); font-size:15px; max-width:480px; line-height:1.7; }
+    .hint { font-size:13px; opacity:.55; letter-spacing:.04em; }
+  </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="bg"></canvas>
+    <canvas id="scene"></canvas>
+    <canvas id="fx"></canvas>
+
+    <div id="hud">
+      <div id="score">0<small>SCORE</small></div>
+      <div id="right">
+        <div id="lives">❤️❤️❤️❤️❤️</div>
+        <div id="wave">構え</div>
+      </div>
+    </div>
+    <div id="area"></div>
+    <div id="cue"></div>
+    <div id="kiai"></div>
+
+    <div id="overlay">
+      <h1>百鬼 夜行</h1>
+      <p>両手の<strong>二刀</strong>を構え、夜の<strong>亡者の長屋街</strong>へ斬り込む。視点は自動で街路を進み、止まった所で<strong>足軽</strong>と<strong>大蜂</strong>が湧く。間合いの敵は両断、<strong>くない・炎</strong>は斬って弾き、<strong>回復の気</strong>を斬れば力が戻る。街を抜けた先の<strong>大門</strong>が開けば——<strong>鬼の大将</strong>が見参する。</p>
+      <div class="setup">
+        <b>セットアップ：</b>カメラから <b>2.5〜3m</b> 離れ、両肘から手首まで全身が映る位置へ。カメラは<b>腰〜胸の高さ</b>。明るい正面光で、背後に窓を置かないのがコツ。<b>両腕を振って</b>二刀で斬る。<br><b>2人同時プレイ可</b>：2人ともカメラに全身を映せば協力（ライフ共有・刀は<span style="color:#aef6ff">青</span>と<span style="color:#ffd9a6">橙</span>で区別）。
+      </div>
+      <button class="btn" id="startBtn">いざ斬り込む</button>
+      <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください</div>
+      <div id="err"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
+    import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    /* =========================================================================
+       百鬼夜行 — nitoryu のオンレール戦闘エンジン流用の「探検シューター」。
+       構成: 亡者の長屋街を進み（travel/encounter を交互）→ 突き当りの大門が開く
+             → 鬼の大将（boss）戦。戦闘ロジックは nitoryu と同一。
+       環境は assets/map/*.glb（gate/nagaya1/wall/ido）で構築。
+       ?preview … カメラ/ポーズ無しで環境のみ描画。__view(z)/__gate(0..1)/__boss()
+       ========================================================================= */
+    const PREVIEW = new URLSearchParams(location.search).has("preview");
+
+    // キャラ・武器（assets/）
+    const ASSETS = {
+      ashigaru: { url:"assets/ashigaru.glb", scale:1.12, kind:"humanoid",
+        clips:{ walk:"Walking", run:"Running", attack:"Attack", kick:"Simple_Kick", hook:"Left_Hook_from_Guard", hit:"Hit_Reaction", death:"Dead" } },
+      boss: { url:"assets/boss.glb", scale:2.0, kind:"humanoid",
+        clips:{ walk:"Walking", run:"Running", jab:"Right_Jab_from_Guard", kick:"Spartan_Kick", hit:"Slap_Reaction", death:"dying_backwards" } },
+      bee: { url:"assets/bee.glb", scale:0.55, kind:"prop", faceY:Math.PI/2, originY:"center" },
+      touroudai: { url:"assets/touroudai.glb", scale:0.9, kind:"prop", originY:"base" },
+      kunai: { url:"assets/kunai.glb", scale:0.28, kind:"projectile", faceY:Math.PI/2 },
+      katana: { url:"assets/katana.glb", scale:0.5, kind:"weapon", gripX:0.78, faceY:Math.PI/2 },
+    };
+    // 街マップ（assets/map/）。各モデルは原点中心・幅≈1.9で個別正規化 → 役割別に拡大
+    const MAP = {
+      gate:       { url:"assets/map/gate.glb",       scale:6.0 },
+      nagaya1:    { url:"assets/map/nagaya1.glb",    scale:5.4 },
+      nagaya2:    { url:"assets/map/nagaya2.glb",    scale:5.4 },
+      wall:       { url:"assets/map/wall.glb",       scale:4.8 },
+      ido:        { url:"assets/map/ido.glb",        scale:1.6 },
+      yabaginoki: { url:"assets/map/yabaginoki.glb", scale:2.7 }, // 枝垂れ柳（中庭の主役）
+    };
+
+    // ---- DOM ----
+    const video = document.getElementById("cam");
+    const bgCanvas = document.getElementById("bg"), bgCtx = bgCanvas.getContext("2d");
+    const fxCanvas = document.getElementById("fx"), fxCtx = fxCanvas.getContext("2d");
+    const glCanvas = document.getElementById("scene");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const errEl = document.getElementById("err");
+    const scoreEl = document.getElementById("score");
+    const livesEl = document.getElementById("lives");
+    const waveEl = document.getElementById("wave");
+    const areaEl = document.getElementById("area");
+    const cueEl = document.getElementById("cue");
+    const kiaiEl = document.getElementById("kiai");
+
+    // ---- 調整パラメータ ----
+    const SWING_MIN = 15;
+    const SPEED_FULL = 80, SLASH_MULT_MIN = 0.2, SLASH_MULT_MAX = 1.4, CRIT_MULT = 1.25;
+    const PLAYER_HP_MAX = 5;
+    const ASHI_HP = 160, ASHI_SLASH_DMG = 58, ASHI_MELEE_DMG = 1;
+    const BEE_HP = 55, BEE_STING_DMG = 1, BEE_SPEED = 4.16;
+    const BOSS_HP = 300, BOSS_MELEE_DMG = 1, BOSS_SLASH_DMG = 18, BOSS_STAGGER_T = 1.6;
+    const HIT_CD = 0.18, PROJ_HIT_CD = 0.16;
+
+    const MELEE_GAP = 4.8;
+    const BLADE_DIST = 1.5;
+    const START_Z = 14;
+    const GATE_Z = -34;          // 突き当りの大門
+    const GATE_FRONT = -25;      // 開門のためカメラが止まる門前
+    const COURT_ANCHOR = -46;    // 中庭＝ボス戦でカメラが止まるz
+    const BOSS_ANCHOR = COURT_ANCHOR;
+
+    // レール上のビート列。長屋街→門前で開門→門をくぐり中庭→鬼の大将
+    const BEATS = [
+      { type:"travel",    toZ:7,   dur:5.0, cue:"亡者の長屋街へ…" },
+      { type:"encounter", anchorZ:7,   spawnDist:16, ashigaru:4, bee:2, kunai:1, gap:0.95, speed:2.3, cue:"長屋より亡者ぞ！斬れ" },
+      { type:"travel",    toZ:-7,  dur:5.0, cue:"街の奥へ" },
+      { type:"encounter", anchorZ:-7,  spawnDist:16, ashigaru:6, bee:3, kunai:3, gap:0.82, speed:2.6, cue:"井戸の陰より伏兵！" },
+      { type:"travel",    toZ:GATE_FRONT,   dur:5.0, cue:"突き当りの大門——" },
+      { type:"travel",    toZ:GATE_FRONT,   dur:2.4, gate:1, cue:"門を開ける…" },
+      { type:"travel",    toZ:COURT_ANCHOR, dur:5.0, cue:"門をくぐり、中庭へ" },
+      { type:"boss",      anchorZ:COURT_ANCHOR, cue:"中庭に、鬼の大将ぞ——" },
+    ];
+    const AREA_NAME = "其ノ一 ・ 亡者の長屋街";
+
+    // ===================== 効果音（Web Audioで合成・ファイル不要）=====================
+    const SFX = (() => {
+      let ctx = null, master = null, ready = false, noiseBuf = null;
+      function init() {
+        if (ctx) return;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        ctx = new AC();
+        master = ctx.createGain(); master.gain.value = 0.5;
+        const comp = ctx.createDynamicsCompressor();
+        master.connect(comp); comp.connect(ctx.destination);
+        ready = true;
+      }
+      const now = () => ctx.currentTime;
+      function getNoise() {
+        if (noiseBuf) return noiseBuf;
+        const n = (ctx.sampleRate * 1) | 0;
+        noiseBuf = ctx.createBuffer(1, n, ctx.sampleRate);
+        const d = noiseBuf.getChannelData(0);
+        for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+        return noiseBuf;
+      }
+      function env(g, t, dur, peak, atk = 0.005) {
+        g.setValueAtTime(0.0001, t);
+        g.exponentialRampToValueAtTime(peak, t + atk);
+        g.exponentialRampToValueAtTime(0.0001, t + dur);
+      }
+      function tone(t, freq, to, type, dur, gain, atk = 0.005) {
+        const o = ctx.createOscillator(); o.type = type;
+        o.frequency.setValueAtTime(freq, t);
+        if (to != null) o.frequency.exponentialRampToValueAtTime(Math.max(1, to), t + dur);
+        const g = ctx.createGain(); env(g.gain, t, dur, gain, atk);
+        o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+      }
+      function noise(t, type, freq, to, q, dur, gain, atk = 0.002) {
+        const src = ctx.createBufferSource(); src.buffer = getNoise();
+        const f = ctx.createBiquadFilter(); f.type = type;
+        f.frequency.setValueAtTime(freq, t);
+        if (to != null) f.frequency.exponentialRampToValueAtTime(Math.max(40, to), t + dur);
+        f.Q.value = q;
+        const g = ctx.createGain(); env(g.gain, t, dur, gain, atk);
+        src.connect(f); f.connect(g); g.connect(master); src.start(t); src.stop(t + dur + 0.02);
+      }
+      function arp(freqs, type, step, dur, gain) {
+        const t = now(); freqs.forEach((f, i) => tone(t + i * step, f, null, type, dur, gain));
+      }
+      return {
+        unlock() { init(); if (ctx && ctx.state === "suspended") ctx.resume(); },
+        sliceFlesh() { if (!ready) return; const t = now(); noise(t, "bandpass", 2600, 700, 0.7, 0.18, 0.32); tone(t, 180, 60, "sine", 0.16, 0.28); },
+        clang()      { if (!ready) return; const t = now(); tone(t, 2400, 1800, "square", 0.18, 0.16); tone(t, 3170, null, "square", 0.14, 0.1); noise(t, "highpass", 4000, null, 1, 0.12, 0.14); },
+        fireCut()    { if (!ready) return; noise(now(), "lowpass", 1800, 300, 0.5, 0.3, 0.3); },
+        bossHit()    { if (!ready) return; const t = now(); tone(t, 120, 50, "sine", 0.22, 0.34); noise(t, "bandpass", 1800, 600, 1, 0.16, 0.18); tone(t, 2200, null, "square", 0.1, 0.08); },
+        death()      { if (!ready) return; tone(now(), 220, 80, "sawtooth", 0.32, 0.22); },
+        hurt()       { if (!ready) return; const t = now(); tone(t, 160, 70, "sawtooth", 0.3, 0.3); noise(t, "lowpass", 900, null, 1, 0.2, 0.2); },
+        heal()       { if (!ready) return; arp([660, 880, 1320], "triangle", 0.06, 0.3, 0.18); },
+        gate()       { if (!ready) return; const t = now(); noise(t, "lowpass", 700, 200, 0.6, 1.4, 0.18); tone(t, 80, 45, "sine", 1.1, 0.16); },
+        bossAppear() { if (!ready) return; const t = now(); tone(t, 70, 40, "sawtooth", 1.2, 0.3); tone(t, 140, 90, "sine", 1.0, 0.2); noise(t, "lowpass", 500, null, 1, 0.8, 0.12); },
+        waveStart()  { if (!ready) return; const t = now(); tone(t, 90, 60, "sine", 0.3, 0.34); noise(t, "lowpass", 1200, null, 1, 0.18, 0.2); },
+        victory()    { if (!ready) return; arp([523, 659, 784, 1047], "triangle", 0.12, 0.5, 0.2); },
+        gameOver()   { if (!ready) return; arp([330, 262, 196], "sawtooth", 0.18, 0.5, 0.2); },
+      };
+    })();
+
+    // ---- 状態 ----
+    let poseLandmarker = null;
+    let state = "idle";
+    let three = null;
+    let envReady = false;
+    const protos = {}, mapProtos = {};
+    let enemies = [], boss = null;
+    let projectiles = [];
+    let heals = [];
+    let particles = [], slashFx = [], embers = [];
+
+    const MAX_PLAYERS = 2, HANDS = MAX_PLAYERS * 2;
+    const hands = Array.from({ length: HANDS }, () => ({ knife:null, prevTip:null, vx:0, vy:0, speed:0, trail:[] }));
+    const playerBlades = new Array(HANDS).fill(null);
+    const TRAIL_COLORS = ["#eafcff", "#eafcff", "#ffd9a6", "#ffd9a6"];
+
+    let lastLandmarks = [], lastVideoTime = -1;
+    let score = 0, lives = PLAYER_HP_MAX, combo = 0, comboTimer = 0;
+    let elapsed = 0, lastTime = 0, flashAlpha = 0, healFlash = 0;
+    let bossDeathT = 0;
+    let W = 1280, H = 720;
+
+    // レール / 進行
+    let beatIdx = -1, beat = null;
+    let camZ = START_Z, travelFrom = START_Z, travelTo = START_Z, travelT = 0, travelDur = 1;
+    let gPlayerZ = START_Z, gMeleeZ = START_Z - MELEE_GAP, gSpawnDist = 16, gSpeed = 2.3, spawnOn = false;
+    let healTimer = 0;
+    let gateAngle = 0, gateTarget = 0;       // 大門の扉の開き(0=閉/2.0=全開)
+    let gateDoors = [];
+
+    // ===================== ローダ =====================
+    async function loadPose() {
+      const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm");
+      poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO", numPoses: MAX_PLAYERS,
+      });
+    }
+    async function loadGLBs() {
+      const loader = new GLTFLoader();
+      const one = async (store, key, cfg) => {
+        if (!cfg.url) return;
+        try { const gltf = await loader.loadAsync(cfg.url); store[key] = { scene: gltf.scene, animations: gltf.animations || [] }; }
+        catch (e) { console.info(`[yakata] ${key} GLB 未配置 → 仮 (${cfg.url})`); }
+      };
+      await Promise.all([
+        ...Object.keys(ASSETS).map((k) => one(protos, k, ASSETS[k])),
+        ...Object.keys(MAP).map((k) => one(mapProtos, k, MAP[k])),
+      ]);
+    }
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode:"user", width:{ideal:1280}, height:{ideal:720} }, audio:false,
+      });
+      video.srcObject = stream; await video.play();
+      W = video.videoWidth || 1280; H = video.videoHeight || 720;
+    }
+    function sizeCanvases() { [bgCanvas, fxCanvas].forEach((c) => { c.width = W; c.height = H; }); }
+
+    // ===================== Three.js =====================
+    function initScene() {
+      const renderer = new THREE.WebGLRenderer({ canvas:glCanvas, alpha:true, antialias:true });
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      renderer.setSize(W, H, false);
+      renderer.setClearColor(0x000000, 0);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.12;
+
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x0e1422, 14, 48);
+
+      const camera = new THREE.PerspectiveCamera(54, W / H, 0.1, 200);
+      camera.position.set(0, 1.55, camZ);
+      camera.lookAt(0, 1.05, camZ - 8);
+
+      scene.add(new THREE.AmbientLight(0x6b7ba0, 0.5));
+      scene.add(new THREE.HemisphereLight(0x9fb6ff, 0x1a1410, 0.95));
+      const moon = new THREE.DirectionalLight(0xcfe0ff, 1.55); moon.position.set(-6, 12, 4); scene.add(moon);
+      const rim = new THREE.DirectionalLight(0xff7a3c, 0.55); rim.position.set(4, 3, -10); scene.add(rim);
+
+      three = { renderer, scene, camera, env: new THREE.Group() };
+      scene.add(three.env);
+    }
+    function resizeRenderer() {
+      if (!three) return;
+      three.renderer.setSize(W, H, false);
+      three.camera.aspect = W / H; three.camera.updateProjectionMatrix();
+    }
+    const _v = new THREE.Vector3();
+    function toScreen(x, y, z) {
+      _v.set(x, y, z).project(three.camera);
+      return { x:(_v.x*0.5+0.5)*W, y:(-_v.y*0.5+0.5)*H, behind:_v.z>1 };
+    }
+    const FORWARD = new THREE.Vector3(0, 0, 1);
+    const _fwd = new THREE.Vector3(), _ndc = new THREE.Vector3();
+    function screenToWorldAtDist(sx, sy, dist) {
+      const cam = three.camera;
+      _ndc.set(sx/W*2-1, -(sy/H*2-1), 0.5).unproject(cam).sub(cam.position).normalize();
+      return cam.position.clone().add(_ndc.multiplyScalar(dist));
+    }
+
+    // ===================== 環境（亡者の長屋街）=====================
+    const M = {
+      ground: new THREE.MeshStandardMaterial({ roughness:0.96, metalness:0 }),
+      wood:   new THREE.MeshStandardMaterial({ color:0x2a1f16, roughness:0.85 }),
+    };
+    function makeGroundTexture() {
+      const c = document.createElement("canvas"); c.width = c.height = 256;
+      const x = c.getContext("2d");
+      x.fillStyle = "#1c1a18"; x.fillRect(0,0,256,256);
+      for (let i=0;i<5;i++) for (let j=0;j<5;j++) {
+        const s = 50, gx = i*s+4, gy = j*s+4;
+        const v = 28 + ((i*7+j*13)%18);
+        x.fillStyle = `rgb(${v+8},${v+4},${v})`;
+        x.fillRect(gx, gy, s-7, s-7);
+      }
+      x.globalAlpha = 0.25;
+      for (let i=0;i<400;i++){ x.fillStyle = Math.random()<0.5?"#000":"#555"; x.fillRect(Math.random()*256, Math.random()*256, 2, 2); }
+      const t = new THREE.CanvasTexture(c);
+      t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(6, 22);
+      return t;
+    }
+    // マップGLBを配置（底をy=0へ補正、rotYで向き）。失敗時は null
+    function placeMap(key, x, z, rotY=0) {
+      const proto = mapProtos[key], cfg = MAP[key];
+      if (!proto) return null;
+      const g = proto.scene.clone(true);
+      g.scale.setScalar(cfg.scale);
+      g.rotation.y = rotY;
+      const b = new THREE.Box3().setFromObject(g);
+      g.position.set(x, -b.min.y, z);
+      three.env.add(g);
+      return g;
+    }
+    // 大門の通路にはめ込む観音開きの扉（モデルに扉が無いため自前で追加）
+    // 蝶番=外側(x=±hinge)、扉は内へ伸びて中央で合わさる。開くと内側(-Z)へ開く
+    const GATE_DOOR = { y:2.0, w:1.55, h:3.2, z:GATE_Z + 1.9, hinge:1.5 };
+    function buildGateDoors() {
+      const mk = (sign) => {
+        const door = new THREE.Group();
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(GATE_DOOR.w, GATE_DOOR.h, 0.16), M.wood);
+        panel.position.set(-sign*GATE_DOOR.w/2, 0, 0);  // 蝶番から中央へ伸ばす
+        const stud = new THREE.Mesh(new THREE.SphereGeometry(0.08,8,8), new THREE.MeshStandardMaterial({ color:0x1a1a1f, metalness:0.6, roughness:0.5 }));
+        stud.position.set(-sign*GATE_DOOR.w*0.3, 0.2, 0.1); door.add(panel, stud);
+        door.position.set(sign*GATE_DOOR.hinge, GATE_DOOR.y, GATE_DOOR.z);
+        three.env.add(door);
+        return { g:door, sign };
+      };
+      gateDoors = [mk(1), mk(-1)];
+    }
+    function setupEnvironment() {
+      if (envReady) return; envReady = true;
+      // 石畳（街路〜中庭まで）
+      M.ground.map = makeGroundTexture();
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 130), M.ground);
+      ground.rotation.x = -Math.PI/2; ground.position.set(0, 0, -22); three.env.add(ground);
+      // 月
+      const moon = new THREE.Mesh(new THREE.CircleGeometry(3.6, 36), new THREE.MeshBasicMaterial({ color:0xf3ead0, fog:false }));
+      moon.position.set(-12, 18, -70); three.env.add(moon);
+
+      // ── 長屋街（左:facade→+X / 右:facade→-X）。z方向に並べる ──
+      const LX = -6.6, RX = 6.6, L = Math.PI/2, R = -Math.PI/2;
+      const street = [
+        { z:10,  left:"nagaya1", right:"nagaya2" },
+        { z:-1,  left:"wall",    right:"wall"    },
+        { z:-12, left:"nagaya2", right:"nagaya1" },
+      ];
+      for (const s of street) {
+        if (s.left)  placeMap(s.left,  LX, s.z, L) || fallbackBuilding(LX, s.z);
+        if (s.right) placeMap(s.right, RX, s.z, R) || fallbackBuilding(RX, s.z);
+      }
+      placeMap("ido", 3.4, -6, -0.5);   // 街の見せ場・伏兵地点
+      placeMap("ido", -3.6, 4, 0.4);
+
+      // ── 突き当りの大門＋扉 ──
+      placeMap("gate", 0, GATE_Z, 0) || fallbackBuilding(0, GATE_Z);
+      buildGateDoors();
+
+      // ── 中庭（門の奥・ボスの間）：塀で囲い、枝垂れ柳と井戸を据える ──
+      placeMap("wall", -7.6, -43, L); placeMap("wall", -7.6, -55, L);
+      placeMap("wall",  7.6, -43, R); placeMap("wall",  7.6, -55, R);
+      placeMap("wall", -4.6, -61, 0); placeMap("wall", 4.6, -61, 0);   // 奥壁
+      placeMap("yabaginoki", -6.2, -46, 0.5);
+      placeMap("yabaginoki",  6.2, -56, -0.7);
+      placeMap("ido", 3.8, -52, 0.3);
+
+      // 石灯籠＋暖色灯（街路・門前・中庭）
+      const lampSpots = [
+        {x:-3.2,z:12},{x:3.2,z:12},{x:-3.2,z:-3},{x:3.2,z:-3},{x:-4.5,z:-27}, // 街路・門前
+        {x:-3.8,z:-41},{x:3.8,z:-41},{x:-4.4,z:-58},{x:4.4,z:-58},            // 中庭
+      ];
+      for (const s of lampSpots) {
+        const lant = instantiateProp("touroudai");
+        if (lant) { lant.position.set(s.x, 0, s.z); lant.rotation.y = (s.x<0?1:-1)*0.4; three.env.add(lant); }
+        const lamp = new THREE.PointLight(0xffce80, 5, 9, 2); lamp.position.set(s.x, 1.3, s.z); three.env.add(lamp);
+      }
+      // 門前と中庭奥の灯り
+      const gl = new THREE.PointLight(0xff9a4d, 7, 16, 2); gl.position.set(0, 3, GATE_Z+3); three.env.add(gl);
+      const cl = new THREE.PointLight(0xff9a4d, 8, 22, 2); cl.position.set(0, 4, -59); three.env.add(cl);
+      // 漂う火の粉
+      for (let i=0;i<60;i++) embers.push({ x:(Math.random()-0.5)*16, y:Math.random()*5, z:-Math.random()*40+10, vy:0.2+Math.random()*0.3, ph:Math.random()*6 });
+
+      if (protos.katana) {
+        for (let s = 0; s < HANDS; s++) { const b = makeKatanaPivot(); b.visible = false; playerBlades[s] = b; three.scene.add(b); }
+      }
+    }
+    // GLB未配置時の超簡易フォールバック（暗い箱）
+    function fallbackBuilding(x, z) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(8, 3.2, 2), new THREE.MeshStandardMaterial({ color:0x2a2620, roughness:0.9 }));
+      m.position.set(x, 1.6, z); m.rotation.y = x<0?Math.PI/2:-Math.PI/2; three.env.add(m);
+    }
+
+    // ---- プレイヤーの3D刀 ----
+    function makeKatanaPivot() {
+      const proto = protos.katana; if (!proto) return null;
+      const pivot = new THREE.Group(), holder = new THREE.Group();
+      const inner = proto.scene.clone(true);
+      inner.scale.setScalar(ASSETS.katana.scale);
+      inner.position.x = -ASSETS.katana.gripX * ASSETS.katana.scale;
+      holder.add(inner);
+      holder.rotation.y = ASSETS.katana.faceY;
+      pivot.add(holder);
+      return pivot;
+    }
+    function updateBlade(pivot, hand) {
+      if (!pivot) return;
+      if (!hand.knife) { pivot.visible = false; return; }
+      pivot.visible = true;
+      const grip3 = screenToWorldAtDist(hand.knife.grip.x, hand.knife.grip.y, BLADE_DIST);
+      const tip3  = screenToWorldAtDist(hand.knife.tip.x,  hand.knife.tip.y,  BLADE_DIST);
+      pivot.position.copy(grip3);
+      _fwd.copy(tip3).sub(grip3).normalize();
+      pivot.quaternion.setFromUnitVectors(FORWARD, _fwd);
+    }
+    function updateBlades() { for (let s = 0; s < HANDS; s++) updateBlade(playerBlades[s], hands[s]); }
+
+    // ===================== 仮モデル（フォールバック） =====================
+    function ph(color, emissive=0x000000) { return new THREE.MeshStandardMaterial({ color, emissive, roughness:0.7, metalness:0.2 }); }
+    function phBox(w, h, d, m, x=0, y=0, z=0) { const o = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), m); o.position.set(x,y,z); return o; }
+    function makePlaceholderHumanoid(big) {
+      const g = new THREE.Group(); const c = big ? 0x1b1430 : 0x2b3350;
+      const m = ph(c, big ? 0x120422 : 0);
+      g.add(phBox(0.5, 1.6*(big?1.4:1), 0.34, m, 0, 0.8*(big?1.4:1), 0));
+      g.add(phBox(0.28, 0.3, 0.28, ph(0xc79a6b), 0, 1.7*(big?1.4:1), 0));
+      g.userData = { mats:[m], placeholder:true };
+      return g;
+    }
+    function makePlaceholderBee() {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.4, 12, 10), ph(0xb8902a, 0x402a04));
+      body.scale.set(1, 0.7, 1.5); g.add(body);
+      g.userData = { mats:[body.material], placeholder:true };
+      return g;
+    }
+
+    // ===================== モデル生成 =====================
+    function findClip(anims, name) {
+      return THREE.AnimationClip.findByName(anims, name) ||
+             anims.find((a) => a.name.toLowerCase().includes(name.toLowerCase())) || null;
+    }
+    function cloneMaterials(group) {
+      const mats = [];
+      group.traverse((o) => {
+        if (!o.material) return;
+        if (Array.isArray(o.material)) o.material = o.material.map((mm) => { const c = mm.clone(); c.userData.baseEmissive = c.emissive ? c.emissive.getHex() : 0; mats.push(c); return c; });
+        else { o.material = o.material.clone(); o.material.userData.baseEmissive = o.material.emissive ? o.material.emissive.getHex() : 0; mats.push(o.material); }
+      });
+      return mats;
+    }
+    function addShadow(group, radius) {
+      const sh = new THREE.Mesh(new THREE.CircleGeometry(radius, 20),
+        new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.34, depthWrite:false }));
+      sh.rotation.x = -Math.PI/2; sh.position.y = 0.02; group.add(sh);
+    }
+    function instantiateHumanoid(key) {
+      const cfg = ASSETS[key], proto = protos[key];
+      if (proto) {
+        const group = cloneSkinned(proto.scene);
+        group.scale.setScalar(cfg.scale);
+        const mats = cloneMaterials(group);
+        const mixer = new THREE.AnimationMixer(group);
+        const actions = {};
+        for (const [name, clipName] of Object.entries(cfg.clips)) {
+          const cl = findClip(proto.animations, clipName);
+          if (cl) actions[name] = mixer.clipAction(cl);
+        }
+        addShadow(group, key === "boss" ? 0.75 : 0.42);
+        return { group, mixer, actions, mats, placeholder:false };
+      }
+      const group = makePlaceholderHumanoid(key === "boss");
+      addShadow(group, key === "boss" ? 0.75 : 0.42);
+      return { group, mixer:null, actions:{}, mats:group.userData.mats, placeholder:true };
+    }
+    function instantiateProp(key) {
+      const cfg = ASSETS[key], proto = protos[key];
+      const outer = new THREE.Group();
+      if (proto) {
+        const inner = proto.scene.clone(true);
+        inner.scale.setScalar(cfg.scale);
+        if (cfg.faceY) inner.rotation.y = cfg.faceY;
+        if (cfg.originY === "base") { const b = new THREE.Box3().setFromObject(inner); inner.position.y -= b.min.y; }
+        outer.add(inner);
+        outer.userData = { mats:[], placeholder:false };
+        return outer;
+      }
+      if (key === "bee") return makePlaceholderBee();
+      return null;
+    }
+
+    function play(e, name, loop=true, fade=0.16) {
+      if (!e.mixer || !e.actions[name]) return null;
+      const a = e.actions[name];
+      if (e.cur === a && loop) return a;
+      if (e.cur && e.cur !== a) e.cur.fadeOut(fade);
+      a.reset();
+      a.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+      a.clampWhenFinished = !loop;
+      a.fadeIn(fade).play();
+      e.cur = a;
+      return a;
+    }
+    function clipDur(e, name) { return e.actions[name]?.getClip().duration || 0.6; }
+    function setFlash(e, on) {
+      for (const m of e.mats || []) {
+        if (!m.emissive) continue;
+        if (on) { m.emissive.setHex(0xff5030); m.emissiveIntensity = 1; }
+        else m.emissive.setHex(m.userData.baseEmissive ?? 0);
+      }
+    }
+    function setOpacity(e, a) {
+      e.group.traverse((o) => { if (o.material) { const arr = Array.isArray(o.material)?o.material:[o.material]; arr.forEach((m)=>{ m.transparent=true; m.opacity=a; }); } });
+    }
+
+    // ===================== 敵スポーン =====================
+    function spawnAshigaru() {
+      const e = instantiateHumanoid("ashigaru");
+      const x = (Math.random()-0.5)*5.0;
+      const z0 = gPlayerZ - gSpawnDist + Math.random()*3;
+      e.group.position.set(x, 0, z0);
+      three.scene.add(e.group);
+      Object.assign(e, {
+        type:"ashigaru", x, z:z0, speed:gSpeed*(0.85+Math.random()*0.3),
+        hp:ASHI_HP, maxHp:ASHI_HP, cur:null, state:"walk", stateT:0, dead:false, dieAge:0,
+        attackT:0, struck:false, hitCd:0, hitFlash:0,
+        meleeZ:gMeleeZ, gaitClip: Math.random()<0.4 ? "run" : "walk",
+        headY:1.5*ASSETS.ashigaru.scale, feetY:0.06, torsoY:1.0*ASSETS.ashigaru.scale,
+      });
+      play(e, e.gaitClip);
+      enemies.push(e);
+    }
+    function spawnBee() {
+      const g = instantiateProp("bee");
+      if (!g) return;
+      const x = (Math.random()-0.5)*7, y = 1.3 + Math.random()*1.7;
+      const z0 = gPlayerZ - Math.min(gSpawnDist, 15) - Math.random()*3;
+      g.position.set(x, y, z0);
+      const mats = cloneMaterials(g);
+      three.scene.add(g);
+      enemies.push({
+        type:"bee", group:g, mixer:null, actions:{}, mats,
+        x, y, z:z0, baseY:y, hp:BEE_HP, maxHp:BEE_HP, playerZ:gPlayerZ,
+        wob:Math.random()*6, dead:false, dieAge:0, hitCd:0, hitFlash:0, flap:0,
+        headY:0, feetY:0, torsoY:0,
+      });
+    }
+    function spawnBoss() {
+      const e = instantiateHumanoid("boss");
+      const z0 = gPlayerZ - 12;
+      e.group.position.set(0, 0, z0);
+      three.scene.add(e.group);
+      Object.assign(e, {
+        type:"boss", x:0, z:z0, hp:BOSS_HP, maxHp:BOSS_HP, cur:null,
+        state:"intro", stateT:1.6, phase:0, dead:false, dieAge:0,
+        hitCd:0, hitFlash:0, staggerT:0, atkStep:0, toThrow:0, throwT:0, struck:false, bob:0,
+        headY:1.5*ASSETS.boss.scale, feetY:0.06, torsoY:1.05*ASSETS.boss.scale,
+      });
+      play(e, "walk");
+      boss = e; enemies.push(e);
+      setCue("alert", "鬼の大将、見参！"); waveEl.textContent = "BOSS"; SFX.bossAppear();
+    }
+    function spawnThrownKunai() {
+      const fx = (Math.random()-0.5)*6, fy = 1.5 + Math.random()*1.2, fz = gPlayerZ - gSpawnDist + 1;
+      spawnProjectile(fx, fy, fz, "kunai");
+    }
+
+    // ===================== 投擲物 / 回復 =====================
+    function makeKunai() {
+      const g = new THREE.Group();
+      const proto = protos.kunai;
+      if (proto) {
+        const inner = proto.scene.clone(true);
+        inner.scale.setScalar(ASSETS.kunai.scale);
+        inner.rotation.y = ASSETS.kunai.faceY;
+        g.add(inner); return g;
+      }
+      const steel = new THREE.MeshStandardMaterial({ color:0xcdd6e0, metalness:0.85, roughness:0.3, emissive:0x223044, emissiveIntensity:0.6 });
+      const blade = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.5, 4), steel); blade.rotation.x = Math.PI/2;
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.03, 6, 12), steel); ring.position.z = -0.3;
+      g.add(blade, ring); return g;
+    }
+    function makeFire() {
+      const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.26, 0),
+        new THREE.MeshStandardMaterial({ color:0xff7b1a, emissive:0xff4400, emissiveIntensity:2.4, roughness:0.4 }));
+      const g = new THREE.Group(); g.add(core); return g;
+    }
+    function spawnProjectile(fx, fy, fz, kind="kunai", speedMul=1) {
+      const m = kind === "fire" ? makeFire() : makeKunai();
+      m.position.set(fx, fy, fz); three.scene.add(m);
+      const tz = gPlayerZ + 0.6, tx = (Math.random()-0.5)*1.6, ty = 1.25+(Math.random()-0.5)*0.5;
+      const dx=tx-fx, dy=ty-fy, dz=tz-fz, dl=Math.hypot(dx,dy,dz)||1, sp=(6.8+Math.random()*2.4)*speedMul;
+      projectiles.push({ mesh:m, kind, x:fx, y:fy, z:fz, vx:dx/dl*sp, vy:dy/dl*sp, vz:dz/dl*sp, targetZ:gPlayerZ, spin:Math.random()*6-3, roll:0, hitCd:0, dead:false, dieAge:0 });
+    }
+    function spawnHeal() {
+      const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.34, 0),
+        new THREE.MeshStandardMaterial({ color:0x43e97b, emissive:0x1f8a4c, emissiveIntensity:1.7, roughness:0.3, metalness:0.4 }));
+      const x = (Math.random()-0.5)*4, z0 = gPlayerZ - 6 - Math.random()*4;
+      m.position.set(x, 1.4, z0); three.scene.add(m);
+      heals.push({ mesh:m, x, z:z0, playerZ:gPlayerZ, bob:Math.random()*6, life:7, hitCd:0, dead:false, dieAge:0 });
+    }
+
+    // ===================== HUD / Cue =====================
+    function updateHud() {
+      scoreEl.innerHTML = score + "<small>SCORE</small>";
+      livesEl.textContent = "❤️".repeat(Math.max(0,lives)) + "🖤".repeat(Math.max(0,PLAYER_HP_MAX-lives));
+    }
+    function setCue(kind, text) {
+      cueEl.classList.remove("strike","guard","alert");
+      if (kind) cueEl.classList.add(kind);
+      cueEl.textContent = text;
+    }
+    function showKiai(text) {
+      kiaiEl.textContent = combo >= 3 ? text + " " + combo + "連" : text;
+      kiaiEl.style.opacity = "1"; kiaiEl.style.transform = "translateX(-50%) scale(1)";
+      clearTimeout(showKiai._t);
+      showKiai._t = setTimeout(() => { kiaiEl.style.opacity = "0"; kiaiEl.style.transform = "translateX(-50%) scale(.6)"; }, 600);
+    }
+
+    // ===================== 当たり判定 =====================
+    function segDist(px, py, ax, ay, bx, by) {
+      const dx=bx-ax, dy=by-ay, len2=dx*dx+dy*dy;
+      let t = len2 ? ((px-ax)*dx+(py-ay)*dy)/len2 : 0; t = Math.max(0, Math.min(1, t));
+      const cx=ax+t*dx, cy=ay+t*dy; return Math.hypot(px-cx, py-cy);
+    }
+    function slashesPoint(sx, sy, r) {
+      for (const k of hands) {
+        if (!k.knife || k.speed < SWING_MIN) continue;
+        const tx = k.knife.tip.x, ty = k.knife.tip.y;
+        if (segDist(sx, sy, tx - k.vx, ty - k.vy, tx, ty) < r) return { vx:k.vx, vy:k.vy, speed:k.speed };
+      }
+      return null;
+    }
+    function speedMult(sp) {
+      const t = (Math.min(sp, SPEED_FULL) - SWING_MIN) / (SPEED_FULL - SWING_MIN);
+      return SLASH_MULT_MIN + Math.max(0, t) * (SLASH_MULT_MAX - SLASH_MULT_MIN);
+    }
+    function burst(x, y, color, n=14) {
+      for (let i=0; i<n; i++) {
+        const a=Math.random()*Math.PI*2, s=120+Math.random()*320;
+        particles.push({ x, y, vx:Math.cos(a)*s, vy:Math.sin(a)*s-120, life:0.5+Math.random()*0.4, age:0, color, size:4+Math.random()*7 });
+      }
+    }
+    function addSlashFx(x, y, vx, vy) {
+      const len=Math.hypot(vx,vy)||1, ux=vx/len, uy=vy/len, L=100;
+      slashFx.push({ x1:x-ux*L, y1:y-uy*L, x2:x+ux*L, y2:y+uy*L, age:0, life:0.22 });
+    }
+    function damagePlayer(n, sx, sy) {
+      if (PREVIEW) return;
+      lives -= n; combo = 0; flashAlpha = 0.6;
+      if (sx != null) burst(sx, sy, "#ff4d6d", 16);
+      SFX.hurt(); updateHud();
+      if (lives <= 0) gameOver();
+    }
+
+    // ===================== 敵更新 =====================
+    function killEnemy(e, sx, sy) {
+      e.dead = true; e.dieAge = 0;
+      if (e.type === "ashigaru") play(e, "death", false);
+      else if (e.type === "bee") e.baseY = e.group.position.y;
+      score += e.type === "bee" ? 15 : 20;
+      burst(sx, sy, "#ffd166", 18); SFX.death(); updateHud();
+    }
+    function startBossDeath(b, sx, sy) {
+      b.dead = true; b.dieAge = 0; b.staggerT = 0;
+      play(b, "death", false);
+      burst(sx, sy, "#ffd166", 48);
+      SFX.bossAppear();
+      setCue("strike", "討ち取ったり！");
+      bossDeathT = clipDur(b, "death") + 1.4;
+    }
+    function updateEnemies(dt) {
+      for (const e of enemies) {
+        if (e.mixer) e.mixer.update(dt);
+        if (e.hitCd > 0) e.hitCd -= dt;
+        if (e.hitFlash > 0) { e.hitFlash -= dt; if (e.hitFlash <= 0) setFlash(e, false); }
+        if (e.type === "boss") { updateBoss(e, dt); continue; }
+        if (e.dead) {
+          e.dieAge += dt;
+          if (e.type === "ashigaru") { if (e.dieAge > 1.7) setOpacity(e, Math.max(0, 1 - (e.dieAge - 1.7) / 0.5)); }
+          else { e.group.position.y = (e.baseY || 1) - e.dieAge*3; e.group.rotation.z += dt*8; setOpacity(e, Math.max(0, 1 - e.dieAge/0.7)); }
+          continue;
+        }
+        if (e.type === "ashigaru") updateAshigaru(e, dt);
+        else if (e.type === "bee") updateBee(e, dt);
+      }
+      enemies = enemies.filter((e) => {
+        if (e.type === "boss") return true;
+        const gone = e.dead && e.dieAge >= (e.type === "bee" ? 0.72 : 2.2);
+        if (gone) three.scene.remove(e.group);
+        return !gone;
+      });
+    }
+    function updateAshigaru(e, dt) {
+      if (e.state === "walk") {
+        play(e, e.gaitClip);
+        e.z += e.speed * dt;
+        if (e.z >= e.meleeZ) { e.z = e.meleeZ; startAshiAttack(e); }
+      } else if (e.state === "attack") {
+        e.stateT -= dt;
+        if (!e.struck && e.stateT <= e.atkDur*0.45) {
+          e.struck = true;
+          const s = toScreen(e.x, e.torsoY, e.z);
+          damagePlayer(ASHI_MELEE_DMG, s.x, s.y);
+        }
+        if (e.stateT <= 0) { e.state = "wait"; e.stateT = 0.5 + Math.random()*0.4; play(e, e.gaitClip); }
+      } else if (e.state === "wait") {
+        e.stateT -= dt;
+        if (e.stateT <= 0) startAshiAttack(e);
+      }
+      e.group.position.set(e.x, 0, e.z);
+    }
+    function startAshiAttack(e) {
+      const opts = ["attack", "hook", "kick"].filter((k) => e.actions[k] || !e.mixer);
+      const name = opts[(Math.random()*opts.length)|0] || "attack";
+      e.state = "attack"; e.struck = false;
+      e.atkDur = clipDur(e, name); e.stateT = e.atkDur;
+      play(e, name, false);
+    }
+    function updateBee(e, dt) {
+      e.wob += dt*2.2; e.flap += dt*30;
+      e.z += BEE_SPEED * dt;
+      e.x += Math.sin(e.wob)*1.4*dt;
+      e.group.position.set(e.x, e.baseY + Math.sin(e.wob*1.6)*0.25, e.z);
+      e.group.rotation.y = Math.atan2(Math.sin(e.wob)*1.4, BEE_SPEED);
+      e.group.rotation.z = Math.sin(e.flap)*0.12;
+      if (e.z >= e.playerZ - 0.4) {
+        const s = toScreen(e.x, e.group.position.y, e.z);
+        damagePlayer(BEE_STING_DMG, s.x, s.y);
+        e.dead = true; e.dieAge = 0; e.baseY = e.group.position.y;
+      }
+    }
+
+    // ---- ボス（多段：投擲→突進→打撃→隙）。位置は gPlayerZ 基準 ----
+    function updateBoss(b, dt) {
+      b.bob += dt*2.0;
+      applyBossTint(b);
+      const k = 1 - Math.pow(0.004, dt);
+      const standZ = gPlayerZ - 9;
+      if (b.dead) {
+        b.dieAge += dt;
+        const clip = clipDur(b, "death");
+        b.group.position.set(b.x, 0, b.z);
+        if (b.dieAge > clip + 0.8) setOpacity(b, Math.max(0, 1 - (b.dieAge - clip - 0.8) / 0.6));
+        return;
+      }
+      if (b.staggerT > 0) { b.staggerT -= dt; b.group.position.set(b.x, Math.sin(b.bob)*0.04, b.z); return; }
+      b.x += (Math.sin(b.bob*0.5)*1.4 - b.x) * (b.state==="strike"?0:k*0.5);
+
+      if (b.state === "intro") {
+        play(b, "walk"); b.z += (standZ - b.z) * k; b.stateT -= dt;
+        if (b.stateT <= 0) enterBossThrow(b);
+      } else if (b.state === "throw") {
+        play(b, "walk"); b.z += (standZ - b.z) * k; b.throwT -= dt;
+        if (b.throwT <= 0 && b.toThrow > 0) {
+          spawnProjectile(b.x + (Math.random()-0.5)*1.2, b.torsoY, b.z+0.6, Math.random()<0.5?"fire":"kunai", 1.1);
+          b.toThrow--; b.throwT = 0.55;
+        }
+        if (b.toThrow <= 0 && b.throwT < -0.4) enterBossCharge(b);
+      } else if (b.state === "charge") {
+        play(b, "run"); b.z += (gMeleeZ - b.z) * (k*1.6);
+        if (b.z >= gMeleeZ - 0.2) { b.z = gMeleeZ; enterBossStrike(b); }
+      } else if (b.state === "strike") {
+        b.stateT -= dt;
+        if (!b.struck && b.stateT <= b.atkDur*0.4) {
+          b.struck = true;
+          const s = toScreen(b.x, b.torsoY, b.z);
+          damagePlayer(BOSS_MELEE_DMG, s.x, s.y);
+        }
+        if (b.stateT <= 0) {
+          b.atkStep++;
+          if (b.atkStep < 2) enterBossStrike(b);
+          else { b.state = "recover"; b.stateT = 1.0; play(b, "walk"); setCue("strike", "▼ 今だ！斬れ！"); }
+        }
+      } else if (b.state === "recover") {
+        play(b, "walk"); b.stateT -= dt;
+        if (b.stateT <= 0) { b.phase++; b.z = standZ; enterBossThrow(b); }
+        else b.z += (gMeleeZ - 0.6 - b.z) * k;
+      }
+      b.group.position.set(b.x, Math.sin(b.bob)*0.04, b.z);
+    }
+    function enterBossThrow(b) { b.state = "throw"; b.toThrow = Math.min(6, 3 + b.phase); b.throwT = 0.3; play(b, "walk"); setCue("guard", "▲ 防御！くない・炎を斬れ"); }
+    function enterBossCharge(b) { b.state = "charge"; play(b, "run"); setCue("alert", "突進！"); }
+    function enterBossStrike(b) {
+      const name = (b.atkStep % 2 === 0) ? "jab" : "kick";
+      b.state = "strike"; b.struck = false;
+      b.atkDur = clipDur(b, name); b.stateT = b.atkDur;
+      play(b, name, false);
+    }
+    function bossSlashable(b) { return !b.dead && b.staggerT <= 0 && (b.state === "charge" || b.state === "strike" || b.state === "recover"); }
+    function applyBossTint(b) {
+      let hex, inten;
+      if (b.staggerT > 0) { hex = 0x3a7bff; inten = 1.7; }
+      else if (b.hitFlash > 0) { hex = 0xff5030; inten = 1.0; }
+      else { hex = null; inten = 1.0; }
+      for (const m of b.mats || []) {
+        if (!m.emissive) continue;
+        m.emissive.setHex(hex ?? (m.userData.baseEmissive ?? 0));
+        m.emissiveIntensity = inten;
+      }
+    }
+
+    // ===================== 投擲物 / 回復 更新 =====================
+    function updateProjectiles(dt) {
+      for (const p of projectiles) {
+        if (p.dead) { p.dieAge += dt; continue; }
+        p.x += p.vx*dt; p.y += p.vy*dt; p.z += p.vz*dt;
+        p.mesh.position.set(p.x, p.y, p.z);
+        if (p.kind === "kunai") {
+          _fwd.set(p.vx, p.vy, p.vz).normalize();
+          p.mesh.quaternion.setFromUnitVectors(FORWARD, _fwd);
+          p.roll += dt*9; p.mesh.rotateZ(p.roll);
+        } else { p.mesh.rotation.z += p.spin*dt; p.mesh.rotation.x += 4*dt; }
+        if (p.hitCd > 0) p.hitCd -= dt;
+        if (p.z >= p.targetZ) { const s=toScreen(p.x,p.y,p.z); damagePlayer(1, s.x, s.y); p.dead=true; p.dieAge=0.25; }
+      }
+      projectiles = projectiles.filter((p) => {
+        const gone = (p.dead && p.dieAge>=0.25) || p.z > p.targetZ+3;
+        if (gone) three.scene.remove(p.mesh);
+        return !gone;
+      });
+    }
+    function updateHeals(dt) {
+      for (const h of heals) {
+        if (h.dead) { h.dieAge += dt; continue; }
+        h.bob += dt*3; h.z += 1.6*dt; h.life -= dt;
+        h.mesh.position.set(h.x, 1.4 + Math.sin(h.bob)*0.18, h.z);
+        h.mesh.rotation.y += dt*1.6;
+        if (h.hitCd > 0) h.hitCd -= dt;
+        if (h.life <= 0 || h.z > h.playerZ) { h.dead = true; h.dieAge = 0.3; }
+      }
+      heals = heals.filter((h) => {
+        const gone = h.dead && h.dieAge >= 0.3;
+        if (gone) three.scene.remove(h.mesh);
+        return !gone;
+      });
+    }
+
+    // ===================== 斬撃解決 =====================
+    function resolveSlashes() {
+      for (const e of enemies) {
+        if (e.dead || e.hitCd > 0) continue;
+        if (e.type === "boss" && !bossSlashable(e)) continue;
+        let sx, sy, hit = null;
+        if (e.type === "bee") {
+          const c = toScreen(e.x, e.group.position.y, e.z); if (c.behind) continue;
+          const top = toScreen(e.x, e.group.position.y + 0.5, e.z);
+          sx = c.x; sy = c.y; hit = slashesPoint(sx, sy, Math.max(34, Math.abs(top.y - c.y)*1.4 + 24));
+        } else {
+          const head = toScreen(e.x, e.headY, e.z), feet = toScreen(e.x, e.feetY, e.z);
+          if (head.behind) continue;
+          const fullH = Math.abs(feet.y - head.y);
+          const tor = toScreen(e.x, e.torsoY, e.z);
+          sx = tor.x; sy = tor.y;
+          hit = slashesPoint(sx, sy, Math.max(40, fullH * (e.type === "boss" ? 0.46 : 0.4)));
+        }
+        if (!hit) continue;
+        e.hitCd = HIT_CD; e.hitFlash = 0.16; setFlash(e, true);
+        combo++; comboTimer = 1.4;
+        const mult = speedMult(hit.speed);
+        const crit = mult >= CRIT_MULT;
+        const base = e.type === "boss" ? BOSS_SLASH_DMG : (e.type === "bee" ? BEE_HP : ASHI_SLASH_DMG);
+        const dmg = base * mult;
+        e.hp -= dmg; score += Math.min(Math.round(dmg), 12);
+        const baseBurst = e.type === "boss" ? 22 : 14;
+        burst(sx, sy, crit ? "#fff2b0" : (e.type === "boss" ? "#ffd166" : (e.type === "bee" ? "#ffd23f" : "#ff9f43")), Math.round(baseBurst * (0.5 + mult)));
+        addSlashFx(sx, sy, hit.vx, hit.vy);
+        if (e.type === "boss") SFX.bossHit(); else SFX.sliceFlesh();
+        const nm = e.type === "boss" ? "斬！" : (Math.abs(hit.vx) > Math.abs(hit.vy) ? "胴！" : "唐竹！");
+        showKiai(crit ? "会心 " + nm : nm);
+        if (e.type === "ashigaru" && e.state !== "attack") { e.z -= 0.25; play(e, "hit", false); e.state = "walk"; }
+        if (e.type === "boss" && e.hp > 0 && crit) { e.staggerT = BOSS_STAGGER_T; play(e, "hit", false); }
+        updateHud();
+        if (e.hp <= 0 && !e.dead) {
+          if (e.type === "boss") startBossDeath(e, sx, sy);
+          else killEnemy(e, sx, sy);
+        }
+      }
+      // 投擲物（弾き）
+      for (const p of projectiles) {
+        if (p.dead || p.hitCd > 0) continue;
+        const s = toScreen(p.x, p.y, p.z); if (s.behind) continue;
+        const top = toScreen(p.x, p.y+0.3, p.z);
+        const r = Math.max(28, Math.abs(top.y - s.y)*1.6 + 26);
+        const hit = slashesPoint(s.x, s.y, r);
+        if (hit) {
+          p.hitCd = PROJ_HIT_CD; p.dead = true; p.dieAge = 0;
+          combo++; comboTimer = 1.4; score += 5;
+          burst(s.x, s.y, p.kind === "fire" ? "#ff7b1a" : "#eafcff", 12);
+          addSlashFx(s.x, s.y, hit.vx, hit.vy);
+          if (p.kind === "fire") SFX.fireCut(); else SFX.clang();
+          updateHud();
+        }
+      }
+      // 回復
+      for (const h of heals) {
+        if (h.dead || h.hitCd > 0) continue;
+        const s = toScreen(h.x, h.mesh.position.y, h.z); if (s.behind) continue;
+        const top = toScreen(h.x, h.mesh.position.y+0.4, h.z);
+        const r = Math.max(34, Math.abs(top.y - s.y)*1.4 + 30);
+        const hit = slashesPoint(s.x, s.y, r);
+        if (hit) {
+          h.hitCd = 1; h.dead = true; h.dieAge = 0;
+          if (lives < PLAYER_HP_MAX) { lives++; healFlash = 0.5; }
+          score += 10; burst(s.x, s.y, "#43e97b", 22); SFX.heal(); showKiai("回復！"); updateHud();
+        }
+      }
+    }
+
+    // ===================== レール / 進行（director）=====================
+    function easeInOut(u){ return u<0.5 ? 2*u*u : 1-Math.pow(-2*u+2,2)/2; }
+    function startBeats() { beatIdx = -1; nextBeat(); }
+    function nextBeat() {
+      beatIdx++;
+      if (beatIdx >= BEATS.length) return;
+      beat = BEATS[beatIdx];
+      spawnOn = false;
+      if (beat.type === "travel") {
+        travelFrom = camZ; travelTo = beat.toZ; travelT = 0; travelDur = beat.dur;
+        if (beat.gate != null) { gateTarget = beat.gate; if (beat.gate >= 1) SFX.gate(); }
+        if (beat.cue) setCue("", beat.cue);
+        waveEl.textContent = "探索中";
+      } else if (beat.type === "encounter") {
+        camZ = beat.anchorZ;
+        gPlayerZ = beat.anchorZ; gMeleeZ = beat.anchorZ - MELEE_GAP;
+        gSpawnDist = beat.spawnDist; gSpeed = beat.speed;
+        beat.toAshi = beat.ashigaru; beat.toBee = beat.bee; beat.toKunai = beat.kunai || 0;
+        beat.spawnT = 0.5; beat.throwT = 1.2; spawnOn = true;
+        setCue("alert", beat.cue); SFX.waveStart();
+        waveEl.textContent = "迎撃 " + encounterNo() + " / " + encounterTotal();
+      } else if (beat.type === "boss") {
+        camZ = beat.anchorZ;
+        gPlayerZ = beat.anchorZ; gMeleeZ = beat.anchorZ - MELEE_GAP; gSpawnDist = 16;
+        beat.spawnT = 1.2; beat.spawned = false;   // 門は既に開いている
+        setCue("alert", beat.cue); waveEl.textContent = "BOSS";
+      }
+    }
+    function encounterNo(){ let n=0; for (let i=0;i<=beatIdx;i++) if (BEATS[i].type==="encounter") n++; return n; }
+    function encounterTotal(){ return BEATS.filter(b=>b.type==="encounter").length; }
+    function updateDirector(dt) {
+      if (!beat) return;
+      if (beat.type === "travel") {
+        travelT += dt;
+        const u = Math.min(1, travelT/travelDur);
+        camZ = travelFrom + (travelTo - travelFrom) * easeInOut(u);
+        if (u >= 1 && !PREVIEW) nextBeat();
+      } else if (beat.type === "encounter") {
+        const e = beat;
+        e.spawnT -= dt;
+        if (e.spawnT <= 0 && (e.toAshi > 0 || e.toBee > 0)) {
+          if (e.toBee > 0 && (e.toAshi === 0 || Math.random() < 0.3)) { spawnBee(); e.toBee--; }
+          else if (e.toAshi > 0) { spawnAshigaru(); e.toAshi--; }
+          e.spawnT = e.gap;
+        }
+        if (e.toKunai > 0) { e.throwT -= dt; if (e.throwT <= 0) { spawnThrownKunai(); e.toKunai--; e.throwT = 1.4 + Math.random(); } }
+        const alive = enemies.some((en) => en.type !== "boss" && !en.dead);
+        if (e.toAshi <= 0 && e.toBee <= 0 && !alive && !PREVIEW) nextBeat();
+        runHealTimer(dt);
+      } else if (beat.type === "boss") {
+        if (!beat.spawned) { beat.spawnT -= dt; if (beat.spawnT <= 0 && !PREVIEW) { spawnBoss(); beat.spawned = true; } }
+        runHealTimer(dt);
+      }
+    }
+    function runHealTimer(dt) {
+      healTimer -= dt;
+      if (healTimer <= 0) { spawnHeal(); healTimer = lives <= 2 ? 9 : 16 + Math.random()*6; }
+    }
+    function updateGate(dt) {
+      gateAngle += (gateTarget*2.0 - gateAngle) * Math.min(1, dt*3);
+      for (const d of gateDoors) d.g.rotation.y = -d.sign * gateAngle; // 内側(-Z)へ開く
+    }
+    function updateCamera() {
+      const bob = (beat && beat.type === "travel") ? Math.sin(elapsed*5.5)*0.035 : 0;
+      three.camera.position.set(0, 1.55 + bob, camZ);
+      three.camera.lookAt(0, 1.02, camZ - 8);
+    }
+
+    // ===================== ループ =====================
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.05, (now - lastTime)/1000);
+      lastTime = now; elapsed += dt;
+
+      if (!PREVIEW) { const poses = detectPose(now); updateHands(poses, now); }
+      updateBlades();
+      updateDirector(dt);
+      updateGate(dt);
+      updateCamera();
+      updateEnemies(dt);
+      updateProjectiles(dt);
+      updateHeals(dt);
+      if (!PREVIEW) resolveSlashes();
+
+      for (const p of particles) { p.age += dt; p.vy += 900*dt; p.x += p.vx*dt; p.y += p.vy*dt; }
+      particles = particles.filter((p) => p.age < p.life);
+      for (const fx of slashFx) fx.age += dt;
+      slashFx = slashFx.filter((fx) => fx.age < fx.life);
+      for (const em of embers) { em.y += em.vy*dt; em.ph += dt; if (em.y > 6) { em.y = 0; em.x = (Math.random()-0.5)*16; em.z = camZ - Math.random()*40; } }
+      if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 0; }
+      if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt*1.5);
+      if (healFlash > 0) healFlash = Math.max(0, healFlash - dt*1.5);
+      if (bossDeathT > 0) { bossDeathT -= dt; if (bossDeathT <= 0) victory(); }
+
+      renderBg();
+      three.renderer.render(three.scene, three.camera);
+      renderFx();
+      requestAnimationFrame(loop);
+    }
+
+    // ===================== 背景レイヤー =====================
+    function renderBg() {
+      if (!PREVIEW && video.readyState >= 2) {
+        bgCtx.save(); bgCtx.translate(W, 0); bgCtx.scale(-1, 1);
+        bgCtx.drawImage(video, 0, 0, W, H); bgCtx.restore();
+        bgCtx.fillStyle = "rgba(10,8,18,0.5)"; bgCtx.fillRect(0, 0, W, H);
+      } else {
+        const sky = bgCtx.createLinearGradient(0, 0, 0, H);
+        sky.addColorStop(0, "#1a2438"); sky.addColorStop(0.5, "#120e1c"); sky.addColorStop(1, "#0a0a12");
+        bgCtx.fillStyle = sky; bgCtx.fillRect(0, 0, W, H);
+      }
+      const g = bgCtx.createRadialGradient(W/2, H/2, H*0.3, W/2, H/2, H*0.82);
+      g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,0.55)");
+      bgCtx.fillStyle = g; bgCtx.fillRect(0, 0, W, H);
+      if (!PREVIEW) for (const p of lastLandmarks) drawSkeleton(p);
+    }
+    function drawSkeleton(lm) {
+      bgCtx.save();
+      bgCtx.strokeStyle = "rgba(255,255,255,0.16)"; bgCtx.lineWidth = 4; bgCtx.lineCap = "round";
+      bgCtx.beginPath();
+      for (const [a,b] of POSE_CONNECTIONS) {
+        const pa=lm[a], pb=lm[b];
+        if ((pa.visibility ?? 1) < 0.3 || (pb.visibility ?? 1) < 0.3) continue;
+        bgCtx.moveTo(W-pa.x*W, pa.y*H); bgCtx.lineTo(W-pb.x*W, pb.y*H);
+      }
+      bgCtx.stroke(); bgCtx.restore();
+    }
+
+    // ===================== FXレイヤー =====================
+    function renderFx() {
+      fxCtx.clearRect(0, 0, W, H);
+      for (const p of projectiles) {
+        if (p.kind !== "fire" || p.dead) continue;
+        const s = toScreen(p.x, p.y, p.z); if (s.behind) continue;
+        const top = toScreen(p.x, p.y+0.3, p.z);
+        const rad = Math.max(14, Math.abs(top.y - s.y)*1.6 + 14);
+        const gg = fxCtx.createRadialGradient(s.x, s.y, 0, s.x, s.y, rad*1.8);
+        gg.addColorStop(0, "rgba(255,170,60,0.55)"); gg.addColorStop(1, "rgba(255,80,0,0)");
+        fxCtx.fillStyle = gg; fxCtx.beginPath(); fxCtx.arc(s.x, s.y, rad*1.8, 0, Math.PI*2); fxCtx.fill();
+      }
+      for (const em of embers) {
+        const s = toScreen(em.x, em.y, em.z); if (s.behind) continue;
+        const a = (0.3 + 0.3*Math.sin(em.ph*3)) * Math.max(0, 1 - em.y/6);
+        fxCtx.globalAlpha = a; fxCtx.fillStyle = "#ffb24d";
+        fxCtx.beginPath(); fxCtx.arc(s.x, s.y, 1.6, 0, Math.PI*2); fxCtx.fill();
+      }
+      fxCtx.globalAlpha = 1;
+      for (const p of particles) {
+        fxCtx.globalAlpha = Math.max(0, 1 - p.age/p.life);
+        fxCtx.fillStyle = p.color; fxCtx.beginPath(); fxCtx.arc(p.x, p.y, p.size, 0, Math.PI*2); fxCtx.fill();
+      }
+      fxCtx.globalAlpha = 1;
+      for (const fx of slashFx) {
+        const a = Math.max(0, 1 - fx.age/fx.life);
+        fxCtx.save(); fxCtx.globalAlpha = a;
+        fxCtx.strokeStyle = "#eafcff"; fxCtx.shadowColor = "#eafcff"; fxCtx.shadowBlur = 24;
+        fxCtx.lineWidth = 8*a + 2; fxCtx.lineCap = "round";
+        fxCtx.beginPath(); fxCtx.moveTo(fx.x1, fx.y1); fxCtx.lineTo(fx.x2, fx.y2); fxCtx.stroke(); fxCtx.restore();
+      }
+      for (let s = 0; s < HANDS; s++) drawTrail(hands[s], TRAIL_COLORS[s]);
+      for (let s = 0; s < HANDS; s++) if (hands[s].knife && !playerBlades[s]) drawKnife(hands[s].knife);
+      if (boss && !boss.dead && boss.hp > 0 && beat && beat.type === "boss") drawBossUI();
+      if (flashAlpha > 0) { fxCtx.fillStyle = `rgba(255,77,109,${flashAlpha})`; fxCtx.fillRect(0, 0, W, H); }
+      if (healFlash > 0) { fxCtx.fillStyle = `rgba(67,233,123,${healFlash*0.5})`; fxCtx.fillRect(0, 0, W, H); }
+    }
+    function drawTrail(k, color = "#eafcff") {
+      if (k.trail.length < 2) return;
+      fxCtx.save(); fxCtx.lineCap = "round"; fxCtx.lineJoin = "round";
+      fxCtx.strokeStyle = color; fxCtx.shadowColor = color; fxCtx.shadowBlur = 20;
+      for (let i=1; i<k.trail.length; i++) {
+        fxCtx.beginPath(); fxCtx.globalAlpha = i/k.trail.length;
+        fxCtx.lineWidth = (i/k.trail.length)*16 + 2;
+        fxCtx.moveTo(k.trail[i-1].x, k.trail[i-1].y); fxCtx.lineTo(k.trail[i].x, k.trail[i].y); fxCtx.stroke();
+      }
+      fxCtx.restore();
+    }
+    function drawKnife(s) {
+      fxCtx.save(); fxCtx.lineCap = "round";
+      fxCtx.strokeStyle = "#2b2118"; fxCtx.lineWidth = 14;
+      fxCtx.beginPath(); fxCtx.moveTo(s.handle.x, s.handle.y); fxCtx.lineTo(s.grip.x, s.grip.y); fxCtx.stroke();
+      fxCtx.fillStyle = "#9a7b3a"; fxCtx.beginPath(); fxCtx.arc(s.grip.x, s.grip.y, 9, 0, Math.PI*2); fxCtx.fill();
+      fxCtx.strokeStyle = "#cdd8e2"; fxCtx.lineWidth = 11;
+      fxCtx.beginPath(); fxCtx.moveTo(s.grip.x, s.grip.y); fxCtx.lineTo(s.tip.x, s.tip.y); fxCtx.stroke();
+      fxCtx.strokeStyle = "rgba(255,255,255,0.9)"; fxCtx.lineWidth = 3.5;
+      fxCtx.beginPath(); fxCtx.moveTo(s.grip.x, s.grip.y); fxCtx.lineTo(s.tip.x, s.tip.y); fxCtx.stroke();
+      fxCtx.fillStyle = "#fff"; fxCtx.beginPath(); fxCtx.arc(s.tip.x, s.tip.y, 6, 0, Math.PI*2); fxCtx.fill();
+      fxCtx.restore();
+    }
+    function drawBossUI() {
+      const bw=W*0.6, bh=Math.max(16,H*0.03), bx=(W-bw)/2, by=H*0.05;
+      fxCtx.save();
+      fxCtx.fillStyle = "rgba(0,0,0,0.45)"; roundRect(bx,by,bw,bh,bh/2); fxCtx.fill();
+      const frac = boss.hp / boss.maxHp;
+      if (frac > 0) {
+        const g = fxCtx.createLinearGradient(bx,0,bx+bw,0); g.addColorStop(0,"#ff4d6d"); g.addColorStop(1,"#ff9f43");
+        fxCtx.fillStyle = g; roundRect(bx,by,Math.max(bh,bw*frac),bh,bh/2); fxCtx.fill();
+      }
+      fxCtx.strokeStyle = "rgba(255,255,255,0.5)"; fxCtx.lineWidth = 2; roundRect(bx,by,bw,bh,bh/2); fxCtx.stroke();
+      fxCtx.fillStyle = "#fff"; fxCtx.font = "700 "+Math.round(bh*0.92)+"px sans-serif";
+      fxCtx.textBaseline = "bottom"; fxCtx.textAlign = "left"; fxCtx.fillText("👹 鬼の大将", bx+2, by-5);
+      fxCtx.textAlign = "right"; fxCtx.fillText(Math.ceil(boss.hp)+" / "+boss.maxHp, bx+bw-2, by-5);
+      fxCtx.restore();
+    }
+    function roundRect(x,y,w,h,r) {
+      r = Math.min(r, w/2, h/2);
+      fxCtx.beginPath(); fxCtx.moveTo(x+r,y);
+      fxCtx.arcTo(x+w,y,x+w,y+h,r); fxCtx.arcTo(x+w,y+h,x,y+h,r);
+      fxCtx.arcTo(x,y+h,x,y,r); fxCtx.arcTo(x,y,x+w,y,r); fxCtx.closePath();
+    }
+
+    // ===================== 姿勢 → 二刀 =====================
+    const POSE_CONNECTIONS = [
+      [11,12],[11,13],[13,15],[12,14],[14,16],
+      [11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],
+    ];
+    function detectPose(nowMs) {
+      if (video.currentTime === lastVideoTime) return lastLandmarks;
+      lastVideoTime = video.currentTime;
+      const res = poseLandmarker.detectForVideo(video, nowMs);
+      lastLandmarks = res?.landmarks || [];
+      return lastLandmarks;
+    }
+    function pt(lm, i) { const p = lm[i]; return { x:W-p.x*W, y:p.y*H, v:p.visibility ?? 1 }; }
+    function buildKnife(lm, eIdx, wIdx, sIdx, sOtherIdx) {
+      const e=pt(lm,eIdx), w=pt(lm,wIdx), s=pt(lm,sIdx), sO=pt(lm,sOtherIdx);
+      if (w.v < 0.3) return null;
+      const shoulderW = Math.hypot(s.x-sO.x, s.y-sO.y) || W*0.12;
+      let dx=w.x-e.x, dy=w.y-e.y;
+      if (e.v < 0.3 || Math.hypot(dx,dy) < shoulderW*0.18) { dx=w.x-s.x; dy=w.y-s.y; }
+      const dl=Math.hypot(dx,dy)||1, ux=dx/dl, uy=dy/dl;
+      const bladeLen = Math.max(70, Math.min(H*0.32, shoulderW*1.15));
+      const grip = { x:w.x, y:w.y };
+      return { grip, tip:{ x:grip.x+ux*bladeLen, y:grip.y+uy*bladeLen }, handle:{ x:grip.x-ux*shoulderW*0.32, y:grip.y-uy*shoulderW*0.32 } };
+    }
+    function updateHands(poses, now) {
+      for (let s = 0; s < HANDS; s++) {
+        const k = hands[s];
+        const lm = poses[(s / 2) | 0] || null;
+        const left = (s % 2) === 0;
+        k.knife = lm ? (left ? buildKnife(lm, 13, 15, 11, 12) : buildKnife(lm, 14, 16, 12, 11)) : null;
+        if (k.knife) {
+          if (k.prevTip) { k.vx = k.knife.tip.x - k.prevTip.x; k.vy = k.knife.tip.y - k.prevTip.y; }
+          k.speed = Math.hypot(k.vx, k.vy);
+          k.prevTip = { x:k.knife.tip.x, y:k.knife.tip.y };
+          k.trail.push({ x:k.knife.tip.x, y:k.knife.tip.y, t:now });
+        } else { k.prevTip = null; k.vx = k.vy = k.speed = 0; }
+        while (k.trail.length && now - k.trail[0].t > 150) k.trail.shift();
+      }
+    }
+
+    // ===================== 進行 =====================
+    function resetGame() {
+      for (const e of enemies) three.scene.remove(e.group);
+      for (const p of projectiles) three.scene.remove(p.mesh);
+      for (const h of heals) three.scene.remove(h.mesh);
+      enemies = []; projectiles = []; heals = []; particles = []; slashFx = []; boss = null; bossDeathT = 0;
+      for (const k of hands) { k.trail.length = 0; k.prevTip = null; k.knife = null; k.vx = k.vy = k.speed = 0; }
+      score = 0; lives = PLAYER_HP_MAX; combo = 0; comboTimer = 0;
+      elapsed = 0; flashAlpha = 0; healFlash = 0; healTimer = 5;
+      camZ = START_Z; gateAngle = 0; gateTarget = 0;
+      updateHud(); setCue("", "いざ、長屋街へ"); waveEl.textContent = "構え";
+      areaEl.textContent = AREA_NAME; areaEl.classList.add("show");
+      setTimeout(() => areaEl.classList.remove("show"), 3200);
+      startBeats();
+    }
+    function victory() {
+      if (state !== "playing") return;
+      state = "clear"; SFX.victory();
+      const bonus = lives*80; score += bonus;
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        '<h1 class="clear">大将、討ち取ったり！</h1>' +
+        "<p>" + AREA_NAME + " を制覇。鬼の大将を撃破！　残ライフ " + lives + " ×80 ＝ +" + bonus + "</p>" +
+        '<div class="big">' + score + "</div>" +
+        "<p>制覇タイム " + elapsed.toFixed(1) + " 秒</p>" +
+        '<button class="btn" id="again">もう一戦</button>';
+      overlay.querySelector("#again").addEventListener("click", restart);
+    }
+    function gameOver() {
+      state = "over"; SFX.gameOver();
+      overlay.classList.remove("hidden");
+      const where = beat && beat.type === "boss" ? "大将戦で力尽きた…" : AREA_NAME + " の探索中に討ち死に…";
+      overlay.innerHTML =
+        "<h1>討ち死に</h1><p>" + where + "</p>" +
+        '<div class="big">' + score + '</div><button class="btn" id="again">もう一戦</button>';
+      overlay.querySelector("#again").addEventListener("click", restart);
+    }
+    function restart() {
+      resetGame(); overlay.classList.add("hidden");
+      state = "playing"; lastTime = performance.now(); requestAnimationFrame(loop);
+    }
+
+    // ===================== 起動 =====================
+    async function boot() {
+      if (PREVIEW) {
+        W = 1280; H = 720; sizeCanvases();
+        if (!three) initScene(); else resizeRenderer();
+        await loadGLBs();
+        setupEnvironment();
+        resetGame();
+        window.__view = (z) => { camZ = z; beat = null; updateCamera(); };
+        window.__gate = (v) => { gateTarget = v; };
+        window.__boss = () => { gPlayerZ = BOSS_ANCHOR; gMeleeZ = BOSS_ANCHOR - MELEE_GAP; camZ = BOSS_ANCHOR; beat = { type:"boss" }; gateTarget = 1; spawnBoss(); };
+        overlay.classList.add("hidden");
+        state = "playing"; lastTime = performance.now(); requestAnimationFrame(loop);
+        return;
+      }
+      await startCamera(); sizeCanvases();
+      if (!three) initScene(); else resizeRenderer();
+      await Promise.all([poseLandmarker ? null : loadPose(), loadGLBs()]);
+      setupEnvironment();
+      resetGame();
+      overlay.classList.add("hidden");
+      state = "playing"; lastTime = performance.now(); requestAnimationFrame(loop);
+    }
+    startBtn.addEventListener("click", async () => {
+      errEl.textContent = "";
+      SFX.unlock();
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラ・AI・モデルを準備中…</p>';
+      try { await boot(); } catch (e) { console.error(e); showError(e); }
+    });
+    function showError(e) {
+      overlay.classList.remove("hidden");
+      const msg = e?.name === "NotAllowedError"
+        ? "カメラの使用が許可されませんでした。ブラウザのアドレスバーのカメラ設定から許可してください。"
+        : "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+      overlay.innerHTML = '<h1>百鬼 夜行</h1><div id="err"></div><button class="btn" id="startBtn2">もう一度</button>';
+      overlay.querySelector("#err").textContent = msg;
+      overlay.querySelector("#startBtn2").addEventListener("click", () => location.reload());
+    }
+    window.addEventListener("resize", () => { if (three) resizeRenderer(); });
+
+    if (PREVIEW) boot().catch((e) => console.error(e));
+  </script>
+</body>
+</html>
