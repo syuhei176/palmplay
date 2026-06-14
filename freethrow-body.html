@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Real Free Throw — 全身で放つバスケのフリースロー</title>
+  <style>
+    :root {
+      --bg: #0c0b16;
+      --accent: #ff9f43;
+      --accent2: #ff6b6b;
+      --good: #43e97b;
+      --danger: #ff4d6d;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: radial-gradient(circle at 50% 0%, #241a36 0%, var(--bg) 70%);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden; -webkit-user-select: none; user-select: none;
+    }
+    #stage { position: relative; width: 100vw; height: 100vh; }
+    #cam { display: none; }
+    #game { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    #hud {
+      position: absolute; top: 0; left: 0; right: 0;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 18px 24px; pointer-events: none; font-variant-numeric: tabular-nums;
+    }
+    #score { font-size: 34px; font-weight: 800; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #score small { font-size: 14px; font-weight: 600; opacity: .7; display: block; letter-spacing: .15em; }
+    #stats { font-size: 22px; font-weight: 700; opacity: .9; text-align: right; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #stats small { font-size: 13px; font-weight: 600; opacity: .7; display: block; letter-spacing: .12em; }
+    #timer {
+      position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+      font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums;
+      text-shadow: 0 2px 12px rgba(0,0,0,.6);
+    }
+    #timer.low { color: var(--danger); animation: pulse .5s ease-in-out infinite; }
+    @keyframes pulse { 50% { transform: translateX(-50%) scale(1.18); } }
+
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 22px; background: rgba(12,11,22,.84); backdrop-filter: blur(6px);
+      text-align: center; padding: 24px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      font-size: clamp(40px, 8vw, 84px); font-weight: 900; letter-spacing: .02em;
+      background: linear-gradient(120deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    #overlay p { font-size: 17px; line-height: 1.8; opacity: .9; max-width: 520px; }
+    #overlay .big { font-size: 64px; font-weight: 900; }
+    .setup {
+      font-size: 13.5px; line-height: 1.7; opacity: .7; max-width: 500px;
+      border: 1px solid rgba(255,255,255,.14); border-radius: 14px; padding: 14px 18px;
+      background: rgba(255,255,255,.04);
+    }
+    .setup b { color: var(--accent); font-weight: 700; }
+    .btn {
+      pointer-events: auto; cursor: pointer; border: none; font: inherit;
+      font-weight: 800; font-size: 22px; color: #2a160c;
+      background: linear-gradient(120deg, var(--accent), var(--accent2));
+      padding: 16px 44px; border-radius: 999px; box-shadow: 0 8px 30px rgba(255,107,107,.4);
+      transition: transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 38px rgba(255,107,107,.55); }
+    .btn:active { transform: translateY(0); }
+    .spinner {
+      width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.2);
+      border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: var(--danger); font-size: 15px; max-width: 460px; line-height: 1.7; }
+    .hint { font-size: 13px; opacity: .55; letter-spacing: .04em; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="score">0<small>SCORE</small></div>
+      <div id="timer">60</div>
+      <div id="stats">0/0<small>MAKES</small></div>
+    </div>
+
+    <div id="overlay">
+      <h1>REAL&nbsp;FREE&nbsp;THROW</h1>
+      <p><strong>両手でボールを構え、本物のシュートのように下から振り上げて頭上で放つ</strong> 🏀。<br>
+         <strong>振り上げの速さ＝アーチの強さ</strong>（左ゲージの<span style="color:var(--good)">緑</span>がちょうどいい）。<br>
+         <strong>ボールの左右＝狙い</strong>。リングの真ん中に合わせよう。<br>
+         スウィッシュ✨やバンク🟦を狙え。連続で決めると倍率UP！60秒チャレンジ。</p>
+      <div class="setup">
+        <b>セットアップ：</b>カメラから <b>2.5〜3m</b> 離れ、<b>腰から頭上まで全身が映る</b>位置へ。カメラは<b>腰〜胸の高さ</b>に。腰の高さでボールを構え → 膝を沈めて → 一気に振り上げて放つ。
+      </div>
+      <button class="btn" id="startBtn">スタート</button>
+      <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください</div>
+      <div id="err"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      PoseLandmarker,
+      FilesetResolver,
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    const video = document.getElementById("cam");
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const scoreEl = document.getElementById("score");
+    const statsEl = document.getElementById("stats");
+    const timerEl = document.getElementById("timer");
+
+    // ---- 調整パラメータ ----
+    const GAME_TIME = 60;          // 制限時間（秒）
+    // 物理（ワールド単位。ゴール深度 D=1）
+    const G = 6.0;                 // 重力
+    const D = 1.0;                 // ゴールまでの深さ
+    const VD = 1.7;                // 奥へ進む速さ（固定＝距離一定）
+    const T_HOOP = D / VD;         // ゴール面に届くまでの時間
+    const H0 = 0.6;                // リリース時の高さ
+    const HRIM = 1.05;             // リングの高さ
+    const MAKE_TOL_H = 0.26;       // 成功とみなすリング高さ許容
+    const SWISH_TOL_H = 0.10;      // スウィッシュ（無接触）許容
+    const BOARD_H = 0.18;          // バンク（板当て）が成立する上振れ幅
+    const RIM_W = 0.14;            // 横方向の成功許容（半幅）
+    const SWISH_W = 0.06;          // スウィッシュの横許容
+    // 投球モーション（速度は「胴体長/秒」で正規化＝カメラ距離に依存しない）
+    const KVN = 0.70;              // 正規化した振り速度 → 上向き初速。強すぎ/弱すぎはここで調整
+    const THROW_ARM_N = 1.4;       // この正規化上向き速度を超えたら「投げ始め」
+    const RELEASE_FRAC = 0.55;     // ピークからこの割合まで減速したらリリース
+    const VH_CAP = 6.5;            // 上向き初速の上限
+    const BLEND_TIME = 0.14;       // 手から飛行へ繋ぐ時間
+    const RELOAD_DELAY = 0.5;      // 次のボールが出るまで
+
+    // 投影（擬似3D）
+    const NEARF = 1, DEPTHF = 1.7;
+
+    let poseLandmarker = null;
+    let state = "idle";
+    let particles = [];
+    let ball = null;               // 飛行中のボール
+    let loaded = true;             // 手元にボールがある
+    let reloadT = 0;
+    let lastLandmarks = null;
+
+    // 構えの状態 & 速度
+    let lastVideoTime = -1;
+    let ballPresent = false, ballX = 0, ballY = 0;
+    let ballVx = 0, ballVy = 0;    // 平滑化したボールの速度(px/s, vy<0=上)
+    let bodyScale = 1;             // 胴体長(px)＝速度の正規化基準
+    let shoulderY = 0;             // 肩の高さ（構え位置の判定用）
+    let prevG = null;              // {x,y,t}
+    // 投球モーションの状態
+    let throwing = false, armed = false, peakN = 0, peakX = 0;
+    let lastThrowN = 0;
+    let aimS = 0;
+
+    let score = 0, best = 0, made = 0, attempts = 0, streak = 0;
+    let timeLeft = GAME_TIME, lastSec = -1, lastTime = 0;
+    let feedback = { text: "", color: "#fff", age: 0, life: 0 };
+
+    // 画面レイアウト（resetで計算）
+    let cx = 0, horizonY = 0, bottomY = 0, LATPX = 0, HPX = 0, BALL_R0 = 0;
+    let lowY = 0, highY = 0;
+
+    // ---- モデル / カメラ ----
+    async function loadModel() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+      );
+      poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numPoses: 1,
+      });
+    }
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+    }
+
+    startBtn.addEventListener("click", async () => {
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      try {
+        await startCamera();
+        if (!poseLandmarker) await loadModel();
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        showError(e);
+      }
+    });
+
+    function showError(e) {
+      overlay.classList.remove("hidden");
+      const msg =
+        e?.name === "NotAllowedError"
+          ? "カメラの使用が許可されませんでした。ブラウザのカメラ設定から許可してください。"
+          : "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+      overlay.innerHTML =
+        '<h1>REAL&nbsp;FREE&nbsp;THROW</h1><div id="err"></div><button class="btn" id="retry">もう一度</button>';
+      overlay.querySelector("#err").textContent = msg;
+      overlay.querySelector("#retry").addEventListener("click", () => location.reload());
+    }
+
+    function computeLayout() {
+      cx = canvas.width / 2;
+      horizonY = canvas.height * 0.30;
+      bottomY = canvas.height * 0.98;
+      LATPX = cx;
+      HPX = canvas.height * 0.46;
+      BALL_R0 = canvas.height * 0.075;
+      lowY = canvas.height * 0.86;
+      highY = canvas.height * 0.24;
+    }
+
+    function resetGame() {
+      computeLayout();
+      particles = []; ball = null; loaded = true; reloadT = 0;
+      prevG = null; throwing = false; armed = false; peakN = 0; lastThrowN = 0;
+      ballVx = 0; ballVy = 0;
+      score = 0; made = 0; attempts = 0; streak = 0;
+      best = Number(localStorage.getItem("freethrow_body_best") || 0);
+      timeLeft = GAME_TIME; lastSec = -1;
+      feedback = { text: "", color: "#fff", age: 0, life: 0 };
+      updateHud();
+    }
+
+    function updateHud() {
+      scoreEl.innerHTML = score + "<small>SCORE</small>";
+      statsEl.innerHTML = made + "/" + attempts + "<small>MAKES · 🔥" + streak + "</small>";
+    }
+
+    function updateTimer() {
+      const s = Math.max(0, Math.ceil(timeLeft));
+      if (s !== lastSec) {
+        lastSec = s;
+        timerEl.textContent = s;
+        timerEl.classList.toggle("low", s <= 10);
+      }
+    }
+
+    // ---- 投影：深さd・高さh・横sの点を画面座標へ ----
+    function project(d, h, s) {
+      const sc = NEARF / (NEARF + d * DEPTHF);
+      const floorY = horizonY + (bottomY - horizonY) * sc;
+      return { x: cx + s * sc * LATPX, y: floorY - h * sc * HPX, sc };
+    }
+
+    // ---- 振り速度（正規化）⇄ アーチ高さの対応（ゲージ表示用）----
+    function vh0ForHeight(H) { return (H - H0 + 0.5 * G * T_HOOP * T_HOOP) / T_HOOP; }
+    function speedForHeightN(H) { return vh0ForHeight(H) / KVN; }
+    const greenLoN = speedForHeightN(HRIM - MAKE_TOL_H);
+    const greenHiN = speedForHeightN(HRIM + MAKE_TOL_H);
+    const perfectN = speedForHeightN(HRIM);
+    const METER_MAX = perfectN * 1.85;
+
+    function launchThrow(speedN, hx, hy) {
+      const vh0 = Math.min(VH_CAP, speedN * KVN);
+      aimS = (hx - cx) / LATPX;
+      ball = { d: 0, h: H0, s: aimS, vd: VD, vh: vh0, t: 0, result: null, blend: 0, rx: hx, ry: hy };
+      loaded = false; attempts++; lastThrowN = speedN;
+      updateHud();
+    }
+
+    function evalShot(b) {
+      const dh = b.h - HRIM;
+      const within = Math.abs(b.s) < RIM_W;
+      if (within && Math.abs(dh) < MAKE_TOL_H) {
+        return (Math.abs(b.s) < SWISH_W && Math.abs(dh) < SWISH_TOL_H) ? "swish" : "good";
+      }
+      if (within && dh > 0 && dh < MAKE_TOL_H + BOARD_H) return "bank"; // 板当て
+      if (Math.abs(b.s) >= RIM_W) return "wide";
+      return dh < 0 ? "short" : "long";
+    }
+
+    function onResult(b) {
+      const r = b.result;
+      const make = (r === "swish" || r === "good" || r === "bank");
+      if (make) {
+        made++; streak++;
+        const mult = 1 + Math.floor(streak / 3);
+        let pts = 2 * mult;
+        if (r === "swish") pts += 1 * mult;
+        score += pts;
+        if (score > best) { best = score; localStorage.setItem("freethrow_body_best", best); }
+        const fb = r === "swish" ? { t: "SWISH! ✨ +" + pts, c: "#ffd166" }
+                 : r === "bank" ? { t: "BANK! 🟦 +" + pts, c: "#4dd2ff" }
+                 : { t: "GOOD! +" + pts, c: "#43e97b" };
+        if (mult >= 3) fb.t += "  x" + mult + " 🔥";
+        else if (mult >= 2) fb.t += "  x" + mult;
+        setFeedback(fb.t, fb.c);
+        const hp = project(D, HRIM, 0);
+        burst(hp.x, hp.y, fb.c, 22);
+        b.vh = -Math.abs(b.vh) - 1.0; b.s *= 0.5; // ネットを通して落とす
+      } else {
+        streak = 0;
+        const fb = r === "short" ? { t: "SHORT 😣 もっと強く", c: "#ff9f43" }
+                 : r === "long" ? { t: "LONG 😖 やや弱く", c: "#ff9f43" }
+                 : { t: "WIDE ↔ 真ん中へ", c: "#ff6b6b" };
+        setFeedback(fb.t, fb.c);
+        if (Math.abs(b.h - HRIM) < MAKE_TOL_H + 0.06 && Math.abs(b.s) < RIM_W + 0.06) {
+          b.vh = 1.2; b.vd *= 0.3; // リング際は弾く演出
+        }
+      }
+      updateHud();
+    }
+
+    function setFeedback(text, color) { feedback = { text, color, age: 0, life: 1.2 }; }
+
+    function burst(x, y, color, n = 16) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = 90 + Math.random() * 320;
+        particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 80,
+          life: 0.5 + Math.random() * 0.4, age: 0, color, size: 3 + Math.random() * 7 });
+      }
+    }
+
+    function gameOver() {
+      state = "over";
+      best = Math.max(best, score);
+      localStorage.setItem("freethrow_body_best", best);
+      const pct = attempts ? Math.round((made / attempts) * 100) : 0;
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        '<h1>TIME UP!</h1><div class="big">' + score + "</div>" +
+        "<p>成功 " + made + " / " + attempts + " 本（" + pct + "%）　BEST " + best + "</p>" +
+        '<button class="btn" id="again">もう一度</button>';
+      overlay.querySelector("#again").addEventListener("click", () => {
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      });
+    }
+
+    // ---- 姿勢検出（ボール＝両手首の中点）+ 速度推定 ----
+    function pt(lm, i) {
+      const p = lm[i];
+      return { x: canvas.width - p.x * canvas.width, y: p.y * canvas.height, v: p.visibility ?? 1 };
+    }
+    const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+    function detectPose(nowMs) {
+      if (video.currentTime === lastVideoTime) return;
+      lastVideoTime = video.currentTime;
+      const res = poseLandmarker.detectForVideo(video, nowMs);
+      const lm = res?.landmarks?.[0];
+      lastLandmarks = lm || null;
+      if (!lm) { ballPresent = false; prevG = null; return; }
+
+      const wl = pt(lm, 15), wr = pt(lm, 16);
+      const sl = pt(lm, 11), sr = pt(lm, 12);
+      const hipL = pt(lm, 23), hipR = pt(lm, 24);
+      // 両手首（少なくとも片方）が見えていること
+      const wrists = [wl, wr].filter((w) => w.v >= 0.3);
+      if (wrists.length === 0 || sl.v < 0.3 || sr.v < 0.3) { ballPresent = false; prevG = null; return; }
+
+      const bx = wrists.reduce((a, w) => a + w.x, 0) / wrists.length;
+      const by = wrists.reduce((a, w) => a + w.y, 0) / wrists.length;
+      const shoulderMid = mid(sl, sr);
+      shoulderY = shoulderMid.y;
+      // 胴体長（肩中点→腰中点）。腰が見えなければ肩幅から推定。最小値でクランプ
+      const shoulderW = Math.hypot(sl.x - sr.x, sl.y - sr.y);
+      let torso = shoulderW * 1.6;
+      if (hipL.v >= 0.3 && hipR.v >= 0.3) {
+        const hipMid = mid(hipL, hipR);
+        torso = Math.hypot(shoulderMid.x - hipMid.x, shoulderMid.y - hipMid.y);
+      }
+      bodyScale = Math.max(canvas.height * 0.10, torso);
+
+      ballPresent = true;
+      ballX = bx;
+      ballY = by;
+      if (prevG) {
+        const dtv = Math.max(1 / 120, (nowMs - prevG.t) / 1000);
+        const vx = (ballX - prevG.x) / dtv, vy = (ballY - prevG.y) / dtv;
+        ballVx = ballVx * 0.4 + vx * 0.6; // 平滑化
+        ballVy = ballVy * 0.4 + vy * 0.6;
+      } else { ballVx = 0; ballVy = 0; }
+      prevG = { x: ballX, y: ballY, t: nowMs };
+    }
+
+    // ---- メインループ ----
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.04, (now - lastTime) / 1000);
+      lastTime = now;
+
+      timeLeft -= dt;
+      updateTimer();
+      if (timeLeft <= 0) { gameOver(); return; }
+
+      detectPose(now);
+
+      if (ballPresent) aimS = (ballX - cx) / LATPX;
+
+      // 投球モーションの検出（手元にボールがあるとき。速度は胴体長で正規化）
+      const upN = ballPresent ? Math.max(0, -ballVy) / bodyScale : 0;
+      // 「構え」＝ボールが肩より下にある状態。ここから振り上げた時だけ投球とみなす
+      if (ballPresent && ballY > shoulderY + bodyScale * 0.15) armed = true;
+      if (loaded && ballPresent) {
+        if (!throwing) {
+          if (armed && upN > THROW_ARM_N) { throwing = true; peakN = upN; peakX = ballX; }
+        } else {
+          if (upN > peakN) { peakN = upN; peakX = ballX; }
+          // 振り上げのトップ（減速 or 下降に転じた）でリリース
+          if (ballVy > 0 || upN < peakN * RELEASE_FRAC) {
+            launchThrow(peakN, ballX, ballY);
+            throwing = false; armed = false;
+          }
+        }
+      } else {
+        throwing = false;
+      }
+
+      // ボール飛行
+      if (ball) {
+        ball.blend = Math.min(1, ball.blend + dt / BLEND_TIME);
+        const prevD = ball.d;
+        ball.d += ball.vd * dt;
+        ball.h += ball.vh * dt;
+        ball.vh -= G * dt;
+        ball.t += dt;
+        if (ball.result === null && prevD < D && ball.d >= D) {
+          ball.result = evalShot(ball);
+          onResult(ball);
+        }
+        if (ball.h < -0.3 || ball.d > 1.9 || ball.t > 2.4) {
+          ball = null; reloadT = RELOAD_DELAY;
+        }
+      } else if (!loaded) {
+        reloadT -= dt;
+        if (reloadT <= 0) loaded = true;
+      }
+
+      // パーティクル
+      for (const p of particles) { p.age += dt; p.vy += 700 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
+      particles = particles.filter((p) => p.age < p.life);
+      if (feedback.life > 0) feedback.age += dt;
+
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    // ---- 描画 ----
+    function render() {
+      ctx.save();
+      ctx.translate(canvas.width, 0); ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+      ctx.fillStyle = "rgba(12,11,22,0.45)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      drawCourt();
+      drawHoopBack();
+
+      // 体のスケルトン（薄く）
+      if (lastLandmarks) drawSkeleton(lastLandmarks);
+
+      // ボール（飛行 or 手元）
+      if (ball) {
+        const p = project(ball.d, ball.h, ball.s);
+        let bx = p.x, by = p.y;
+        if (ball.blend < 1) { const k = ball.blend; bx = ball.rx + (p.x - ball.rx) * k; by = ball.ry + (p.y - ball.ry) * k; }
+        drawBall(bx, by, BALL_R0 * p.sc);
+      } else if (loaded && ballPresent) {
+        drawBall(ballX, ballY, BALL_R0 * 0.96); // 手元のボール（両手の間）
+      } else if (loaded) {
+        const p = project(0, H0, 0);
+        drawBall(p.x, p.y, BALL_R0);
+      }
+
+      drawHoopNet();
+
+      if (loaded && ballPresent) { drawAim(); drawGauge(); }
+
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      if (feedback.life > 0 && feedback.age < feedback.life) {
+        const k = feedback.age / feedback.life;
+        ctx.globalAlpha = Math.max(0, 1 - k);
+        ctx.fillStyle = feedback.color;
+        ctx.font = "900 " + Math.round(canvas.height * 0.06) + "px -apple-system, sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.shadowColor = "rgba(0,0,0,0.6)"; ctx.shadowBlur = 12;
+        ctx.fillText(feedback.text, cx, canvas.height * 0.2 - k * 30);
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+      }
+    }
+
+    const POSE_CONNECTIONS = [
+      [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+      [11, 23], [12, 24], [23, 24],
+      [23, 25], [25, 27], [24, 26], [26, 28],
+    ];
+    function drawSkeleton(lm) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      ctx.lineWidth = 4; ctx.lineCap = "round";
+      ctx.beginPath();
+      for (const [a, b] of POSE_CONNECTIONS) {
+        const pa = lm[a], pb = lm[b];
+        if ((pa.visibility ?? 1) < 0.3 || (pb.visibility ?? 1) < 0.3) continue;
+        ctx.moveTo(canvas.width - pa.x * canvas.width, pa.y * canvas.height);
+        ctx.lineTo(canvas.width - pb.x * canvas.width, pb.y * canvas.height);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawCourt() {
+      const g = ctx.createLinearGradient(0, horizonY, 0, bottomY);
+      g.addColorStop(0, "rgba(150,95,45,0.28)");
+      g.addColorStop(1, "rgba(190,130,70,0.34)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, horizonY, canvas.width, bottomY - horizonY);
+      ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 3; ctx.lineCap = "round";
+      const laneW = 0.42;
+      for (const sgn of [-1, 1]) {
+        const a = project(0, 0, sgn * laneW), b = project(D, 0, sgn * (laneW * 0.5));
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      const el = project(D, 0, -laneW * 0.5), er = project(D, 0, laneW * 0.5);
+      ctx.beginPath(); ctx.moveTo(el.x, el.y); ctx.lineTo(er.x, er.y); ctx.stroke();
+    }
+
+    function drawHoopBack() {
+      const rim = project(D, HRIM, 0);
+      const sc = rim.sc;
+      const bw = LATPX * RIM_W * 2.6 * sc;
+      const bh = HPX * 0.5 * sc;
+      const boardTop = rim.y - HPX * 0.34 * sc;
+      ctx.strokeStyle = "rgba(40,44,60,0.9)"; ctx.lineWidth = Math.max(3, 10 * sc);
+      const floor = project(D, 0, 0);
+      ctx.beginPath(); ctx.moveTo(rim.x, boardTop + bh); ctx.lineTo(floor.x, floor.y); ctx.stroke();
+      ctx.fillStyle = "rgba(245,247,255,0.92)";
+      ctx.strokeStyle = "rgba(40,44,60,0.9)"; ctx.lineWidth = Math.max(2, 4 * sc);
+      ctx.fillRect(rim.x - bw / 2, boardTop, bw, bh);
+      ctx.strokeRect(rim.x - bw / 2, boardTop, bw, bh);
+      ctx.strokeStyle = "rgba(255,107,107,0.9)"; ctx.lineWidth = Math.max(2, 4 * sc);
+      ctx.strokeRect(rim.x - bw * 0.16, rim.y - bh * 0.5, bw * 0.32, bh * 0.42);
+      const rw = LATPX * RIM_W * sc, rh = rw * 0.34;
+      ctx.strokeStyle = "#ff7a2f"; ctx.lineWidth = Math.max(3, 8 * sc);
+      ctx.beginPath(); ctx.ellipse(rim.x, rim.y, rw, rh, 0, Math.PI, Math.PI * 2); ctx.stroke();
+    }
+
+    function drawHoopNet() {
+      const rim = project(D, HRIM, 0);
+      const sc = rim.sc;
+      const rw = LATPX * RIM_W * sc, rh = rw * 0.34;
+      ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = Math.max(1, 1.6 * sc);
+      const depth = rh * 5;
+      for (let i = -3; i <= 3; i++) {
+        const tx = (i / 3) * rw;
+        ctx.beginPath();
+        ctx.moveTo(rim.x + tx, rim.y);
+        ctx.lineTo(rim.x + tx * 0.35, rim.y + depth);
+        ctx.stroke();
+      }
+      for (let r = 1; r <= 3; r++) {
+        const yy = rim.y + (depth * r) / 3.5;
+        const ww = rw * (1 - r * 0.2);
+        ctx.beginPath(); ctx.ellipse(rim.x, yy, ww, ww * 0.28, 0, 0, Math.PI); ctx.stroke();
+      }
+      ctx.strokeStyle = "#ff8c3a"; ctx.lineWidth = Math.max(3, 8 * sc);
+      ctx.beginPath(); ctx.ellipse(rim.x, rim.y, rw, rh, 0, 0, Math.PI); ctx.stroke();
+    }
+
+    function drawBall(x, y, r) {
+      if (r < 2) return;
+      ctx.save();
+      const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.2, x, y, r);
+      g.addColorStop(0, "#ffb56b"); g.addColorStop(0.6, "#ff8a30"); g.addColorStop(1, "#d4621a");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(60,30,10,0.7)"; ctx.lineWidth = Math.max(1, r * 0.06);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x - r, y); ctx.lineTo(x + r, y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x, y + r); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(x, y, r * 0.5, r, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(x, y, r, r * 0.5, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawAim() {
+      const aim = project(D, HRIM, aimS);
+      const centered = Math.abs(aimS) < RIM_W;
+      ctx.save();
+      ctx.strokeStyle = centered ? "#43e97b" : "#ff6b6b"; ctx.lineWidth = 3;
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.arc(aim.x, aim.y, 14, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(aim.x - 22, aim.y); ctx.lineTo(aim.x - 8, aim.y);
+      ctx.moveTo(aim.x + 8, aim.y); ctx.lineTo(aim.x + 22, aim.y); ctx.stroke();
+      ctx.globalAlpha = 0.3; ctx.setLineDash([6, 8]);
+      ctx.beginPath(); ctx.moveTo(ballX, ballY); ctx.lineTo(aim.x, aim.y); ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+
+    function drawGauge() {
+      const bx = canvas.width * 0.05, bw = 26, by = highY, bh = lowY - highY;
+      const sy = (s) => by + (1 - Math.min(1, s / METER_MAX)) * bh; // 速度→画面y
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
+      roundRect(bx, by, bw, bh, 13); ctx.fill();
+      // 緑ゾーン（適正な振りの速さ）
+      ctx.fillStyle = "rgba(67,233,123,0.55)";
+      ctx.fillRect(bx, sy(greenHiN), bw, sy(greenLoN) - sy(greenHiN));
+      // パーフェクトライン
+      ctx.strokeStyle = "#ffd166"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(bx, sy(perfectN)); ctx.lineTo(bx + bw, sy(perfectN)); ctx.stroke();
+      // 今の振り速度（リアルタイム・正規化）
+      const cur = ballPresent ? Math.max(0, -ballVy) / bodyScale : 0;
+      const inGreen = cur >= greenLoN && cur <= greenHiN;
+      ctx.fillStyle = inGreen ? "#43e97b" : "#ff9f43";
+      ctx.beginPath(); ctx.arc(bx + bw / 2, sy(cur), 11, 0, Math.PI * 2); ctx.fill();
+      // 直前の投げ（マーカー）
+      if (lastThrowN > 0) {
+        const ly = sy(lastThrowN);
+        ctx.fillStyle = "#fff";
+        ctx.beginPath(); ctx.moveTo(bx + bw + 4, ly); ctx.lineTo(bx + bw + 16, ly - 7); ctx.lineTo(bx + bw + 16, ly + 7); ctx.closePath(); ctx.fill();
+      }
+      ctx.fillStyle = "#fff"; ctx.font = "700 12px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("振り", bx + bw / 2, by - 12);
+      ctx.restore();
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Rock Dodge — 全身で避ける擬似3Dよけゲー</title>
+  <style>
+    :root {
+      --bg: #0b0d1a;
+      --accent: #38f9d7;
+      --gold: #ffd166;
+      --danger: #ff4d6d;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: radial-gradient(circle at 50% 0%, #1a1f3a 0%, var(--bg) 70%);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #stage {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    /* video は検出用。画面には canvas を表示する */
+    #cam { display: none; }
+    #game {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    /* HUD */
+    #hud {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 18px 24px;
+      pointer-events: none;
+      font-variant-numeric: tabular-nums;
+    }
+    #score { font-size: 34px; font-weight: 800; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #score small { font-size: 14px; font-weight: 600; opacity: .7; display: block; letter-spacing: .15em; }
+    #lives { font-size: 30px; letter-spacing: 4px; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+    #level {
+      position: absolute;
+      top: 18px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 16px; font-weight: 700; letter-spacing: .2em;
+      opacity: .9;
+      text-shadow: 0 2px 12px rgba(0,0,0,.6);
+      white-space: nowrap;
+    }
+    #progress {
+      position: absolute; top: 48px; left: 50%; transform: translateX(-50%);
+      width: min(46vw, 360px); height: 7px; border-radius: 999px;
+      background: rgba(255,255,255,.14); overflow: hidden;
+      box-shadow: 0 2px 10px rgba(0,0,0,.4);
+    }
+    #progress > i {
+      display: block; height: 100%; width: 0%; border-radius: 999px;
+      background: var(--accent);
+      transition: width .25s ease, background .35s ease;
+    }
+    #pop {
+      position: absolute;
+      top: 64px; left: 50%;
+      transform: translateX(-50%) scale(.6);
+      font-size: 56px; font-weight: 900;
+      color: var(--gold);
+      text-shadow: 0 0 22px rgba(255,209,102,.8);
+      opacity: 0;
+      transition: opacity .12s, transform .12s;
+    }
+
+    /* オーバーレイ（スタート/ゲームオーバー/読込） */
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 22px;
+      background: rgba(8,10,22,.84);
+      backdrop-filter: blur(6px);
+      text-align: center;
+      padding: 24px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      font-size: clamp(40px, 8vw, 84px);
+      font-weight: 900;
+      letter-spacing: .04em;
+      background: linear-gradient(120deg, var(--accent), #6c8cff);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    #overlay p { font-size: 17px; line-height: 1.8; opacity: .88; max-width: 480px; }
+    #overlay .big { font-size: 64px; font-weight: 900; }
+    .setup {
+      font-size: 13.5px; line-height: 1.7; opacity: .72; max-width: 480px;
+      border: 1px solid rgba(255,255,255,.14); border-radius: 14px; padding: 14px 18px;
+      background: rgba(255,255,255,.04);
+    }
+    .setup b { color: var(--accent); font-weight: 700; }
+    .btn {
+      pointer-events: auto;
+      cursor: pointer;
+      border: none;
+      font: inherit;
+      font-weight: 800;
+      font-size: 22px;
+      color: #07140f;
+      background: linear-gradient(120deg, var(--accent), #6c8cff);
+      padding: 16px 44px;
+      border-radius: 999px;
+      box-shadow: 0 8px 30px rgba(56,249,215,.35);
+      transition: transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 38px rgba(56,249,215,.5); }
+    .btn:active { transform: translateY(0); }
+    .spinner {
+      width: 46px; height: 46px;
+      border: 4px solid rgba(255,255,255,.2);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: var(--danger); font-size: 15px; max-width: 460px; line-height: 1.7; }
+    .hint { font-size: 13px; opacity: .55; letter-spacing: .04em; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="score">0<small>SCORE</small></div>
+      <div id="lives">❤️❤️❤️</div>
+    </div>
+    <div id="level">STAGE 1/3</div>
+    <div id="progress"><i></i></div>
+    <div id="pop"></div>
+
+    <div id="overlay">
+      <h1>ROCK&nbsp;DODGE</h1>
+      <p>webカメラに<strong>全身</strong>を映し、<strong>体を左右に動かして</strong>奥から転がってくる岩 🪨 を避けろ。<br>宝 💎 / 🪙 は<strong>自分の位置を合わせて</strong>拾うと加点。岩は避け、宝だけ拾え。<br>点数を稼いで<strong>全3ステージ</strong>（へいげん→さばく→かざん）クリアを目指せ。</p>
+      <div class="setup">
+        <b>セットアップ：</b>カメラから <b>2〜3m</b> 離れ、左右に動けるスペースを確保して腰から上が映る位置へ。<br>
+        画面に映る<b>あなたの位置がそのままプレイヤー</b>になります。<b>最大3人</b>で並べば全員のアバターが出て<b>協力プレイ</b>（ライフは共有）。
+      </div>
+      <button class="btn" id="startBtn">スタート</button>
+      <div class="hint">※ カメラの使用許可を求められたら「許可」を選んでください</div>
+      <div id="err"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      PoseLandmarker,
+      FilesetResolver,
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12";
+
+    const video = document.getElementById("cam");
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const errEl = document.getElementById("err");
+    const scoreEl = document.getElementById("score");
+    const livesEl = document.getElementById("lives");
+    const levelEl = document.getElementById("level");
+    const progressFill = document.querySelector("#progress > i");
+    const popEl = document.getElementById("pop");
+
+    // ---- 擬似3D / バランス定数 ----
+    const NEAR = 1, DEPTH = 6;       // far(z=1) の縮小率 = NEAR/(NEAR+DEPTH)
+    const SMOOTH = 0.22;             // アバターx の追従(lerp)。検出のブレを吸収
+    const ROCK_PROB = 0.56;          // 出現が岩になる確率
+    const GEM_PROB = 0.32;           // 宝のうち 💎(高得点) になる確率
+    const MAX_PLAYERS = 3;           // 同時に扱うプレイヤー（人）の数 — 協力プレイ
+    const PLAYER_COLORS = [          // プレイヤーごとの色（胴グラデ上/下, 腕）
+      { top: "#5cf0dc", bot: "#2aa6ff", arm: "#2aa6ff" },
+      { top: "#ffd36b", bot: "#ff8b46", arm: "#ff8b46" },
+      { top: "#ff8bbd", bot: "#c44bd8", arm: "#c44bd8" },
+    ];
+
+    // ---- ステージ（点数で進行、各 goal 到達で次へ。最後の goal でクリア）----
+    const STAGES = [
+      { name: "へいげん", goal: 500,  rock: "🪨", coin: "🪙", gem: "💎", road: "56,249,215", tint: "8,10,22",  veil: 0.42 },
+      { name: "さばく",   goal: 1200, rock: "🌵", coin: "🪙", gem: "💎", road: "255,179,71", tint: "32,20,8",  veil: 0.40 },
+      { name: "かざん",   goal: 2000, rock: "🔥", coin: "💰", gem: "👑", road: "255,77,109", tint: "26,6,10",  veil: 0.46 },
+    ];
+    const currentStage = () => STAGES[stageIdx];
+
+    let poseLandmarker = null;
+    let state = "idle"; // idle | playing | over
+
+    let objects = [];   // {ax, z, zSpeed, kind:'rock'|'coin'|'gem', emoji, value, rot, vr, bob, resolved}
+    let particles = [];
+
+    let score = 0;       // 内部は float（生存ボーナスを加算）
+    let lives = 3;
+    let stageIdx = 0;    // 現在のステージ（0..2）
+    let combo = 0, comboTimer = 0;
+    let elapsed = 0, spawnTimer = 0;
+    let lastTime = 0, lastVideoTime = -1;
+    let flashAlpha = 0, flashColor = "255,77,109";
+
+    // プレイヤー＝カメラに映った各人の体にアバターを一致させる（協力プレイ）
+    // {x:アバター画面x(スムージング後), targetX:体の肩中点x, bodyY:体の肩中点y, miss:未検出フレーム数}
+    let players = [];
+    let bodyVisible = false;
+
+    // 画面シェイク
+    const shake = { t: 0, mag: 0 };
+    function addShake(mag) { shake.mag = Math.max(shake.mag, mag); shake.t = 0.26; }
+
+    // 画面ジオメトリ（canvas サイズ確定後に算出）
+    let VP = { x: 0, y: 0 };
+    let groundNearY = 0, roadHalfNear = 0, catchHalf = 0, ROCK_BASE = 0, GEM_BASE = 0;
+    function computeGeom() {
+      VP = { x: canvas.width / 2, y: canvas.height * 0.30 };
+      groundNearY = canvas.height * 0.90;
+      roadHalfNear = canvas.width * 0.44;
+      catchHalf = canvas.width * 0.072;
+      ROCK_BASE = canvas.height * 0.21;
+      GEM_BASE = canvas.height * 0.16;
+    }
+
+    // ---- モデル読み込み ----
+    async function loadModel() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+      );
+      poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numPoses: MAX_PLAYERS,
+      });
+    }
+
+    // ---- カメラ起動 ----
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+      computeGeom();
+    }
+
+    // ---- スタート ----
+    startBtn.addEventListener("click", async () => {
+      errEl.textContent = "";
+      overlay.innerHTML = '<div class="spinner"></div><p>カメラとAIモデルを準備中…</p>';
+      try {
+        await startCamera();
+        if (!poseLandmarker) await loadModel();
+        resetGame();
+        overlay.classList.add("hidden");
+        state = "playing";
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        showError(e);
+      }
+    });
+
+    function showError(e) {
+      overlay.classList.remove("hidden");
+      const msg =
+        e?.name === "NotAllowedError"
+          ? "カメラの使用が許可されませんでした。ブラウザのアドレスバーのカメラ設定から許可してください。"
+          : "起動に失敗しました（" + (e?.message || e) + "）。https もしくは localhost で開いているか確認してください。";
+      overlay.innerHTML =
+        '<h1>ROCK&nbsp;DODGE</h1><div id="err"></div><button class="btn" id="startBtn2">もう一度</button>';
+      overlay.querySelector("#err").textContent = msg;
+      overlay.querySelector("#startBtn2").addEventListener("click", () => location.reload());
+    }
+
+    function resetGame() {
+      objects = [];
+      particles = [];
+      score = 0;
+      lives = 3;
+      stageIdx = 0;
+      combo = 0; comboTimer = 0;
+      elapsed = 0; spawnTimer = 0.6;
+      flashAlpha = 0;
+      players = [];
+      bodyVisible = false;
+      applyStageTheme();
+      updateHud();
+    }
+
+    function updateHud() {
+      scoreEl.innerHTML = Math.floor(score) + "<small>SCORE</small>";
+      livesEl.textContent = "❤️".repeat(Math.max(0, lives)) + "🖤".repeat(Math.max(0, 3 - lives));
+      const st = currentStage();
+      levelEl.textContent = "STAGE " + (stageIdx + 1) + "/3 ・ " + st.name;
+      const prev = stageIdx === 0 ? 0 : STAGES[stageIdx - 1].goal;
+      const frac = Math.max(0, Math.min(1, (score - prev) / (st.goal - prev)));
+      progressFill.style.width = (frac * 100) + "%";
+    }
+
+    // ステージのテーマ色を進捗バーへ反映（背景・道路色は描画時に参照）
+    function applyStageTheme() {
+      progressFill.style.background = "rgb(" + currentStage().road + ")";
+    }
+
+    // ---- 擬似3D投影：奥(z=1)ほど消失点に寄って小さく、手前(z=0)で原寸 ----
+    function project(ax, ay, z) {
+      const scale = NEAR / (NEAR + z * DEPTH);
+      return { x: VP.x + (ax - VP.x) * scale, y: VP.y + (ay - VP.y) * scale, scale };
+    }
+
+    // ---- 出現（奥から手前へ）----
+    function spawn() {
+      const st = currentStage();
+      const ax = canvas.width * (0.12 + Math.random() * 0.76); // 出現する画面x（手前 z=0 基準）
+      const r = Math.random();
+      let kind, emoji, value;
+      if (r < ROCK_PROB) { kind = "rock"; emoji = st.rock; value = 0; }
+      else if (Math.random() < GEM_PROB) { kind = "gem"; emoji = st.gem; value = 100; }
+      else { kind = "coin"; emoji = st.coin; value = 30; }
+      objects.push({
+        ax, z: 1,
+        zSpeed: (0.30 + elapsed * 0.004) * (1 + stageIdx * 0.30) + Math.random() * 0.06,
+        kind, emoji, value,
+        rot: Math.random() * Math.PI * 2,
+        vr: (Math.random() - 0.5) * 3,
+        bob: Math.random() * Math.PI * 2,
+        resolved: false,
+      });
+    }
+
+    let lastLandmarks = null;
+    function detectPose(nowMs) {
+      if (video.currentTime === lastVideoTime) return lastLandmarks;
+      lastVideoTime = video.currentTime;
+      const res = poseLandmarker.detectForVideo(video, nowMs);
+      lastLandmarks = res?.landmarks || null; // 全員分の姿勢
+      return lastLandmarks;
+    }
+
+    // 体の肩中点（無ければ腰中点）の画面位置（ミラー後）。見つからなければ null
+    function bodyPos(lm) {
+      const s11 = lm[11], s12 = lm[12], h23 = lm[23], h24 = lm[24];
+      if ((s11?.visibility ?? 0) > 0.3 && (s12?.visibility ?? 0) > 0.3)
+        return { x: ((1 - s11.x) + (1 - s12.x)) / 2 * canvas.width, y: (s11.y + s12.y) / 2 * canvas.height };
+      if ((h23?.visibility ?? 0) > 0.3 && (h24?.visibility ?? 0) > 0.3)
+        return { x: ((1 - h23.x) + (1 - h24.x)) / 2 * canvas.width, y: (h23.y + h24.y) / 2 * canvas.height };
+      return null;
+    }
+
+    // 検出された各人の体に、既存アバターを最近傍で対応づけて同一性を保つ
+    function updatePlayers(landmarksList) {
+      const dets = [];
+      if (landmarksList) for (const lm of landmarksList) { const p = bodyPos(lm); if (p) dets.push(p); }
+      bodyVisible = dets.length > 0;
+
+      const used = new Array(dets.length).fill(false);
+      for (const pl of players) {
+        let best = -1, bestD = Infinity;
+        for (let i = 0; i < dets.length; i++) {
+          if (used[i]) continue;
+          const d = Math.abs(dets[i].x - pl.targetX);
+          if (d < bestD) { bestD = d; best = i; }
+        }
+        if (best >= 0 && bestD < canvas.width * 0.25) {
+          used[best] = true;
+          pl.targetX = dets[best].x; pl.bodyY = dets[best].y; pl.miss = 0;
+        } else {
+          pl.miss++;
+        }
+      }
+      // しばらく見失ったアバターは退場（約0.5秒）
+      players = players.filter((pl) => pl.miss < 30);
+      // 余った検出を新しいプレイヤーとして追加
+      for (let i = 0; i < dets.length && players.length < MAX_PLAYERS; i++) {
+        if (used[i]) continue;
+        players.push({ x: dets[i].x, targetX: dets[i].x, bodyY: dets[i].y, miss: 0 });
+      }
+    }
+
+    // ---- 衝突解決（z<=0 で誰かの位置に重なったか）----
+    function resolve(o) {
+      o.resolved = true;
+      const objX = o.ax;             // 手前(z=0)での画面x
+      const base = o.kind === "rock" ? ROCK_BASE : GEM_BASE;
+      const thr = catchHalf + base * 0.34;
+      const overlap = players.some((pl) => Math.abs(objX - pl.x) < thr);
+      if (o.kind === "rock") {
+        if (overlap) hitRock(objX);
+      } else if (overlap) {
+        collect(o, objX);
+      } else {
+        // 宝を取り逃した（ペナルティ無し）
+        combo = 0;
+      }
+    }
+
+    function hitRock(x) {
+      lives--;
+      combo = 0;
+      flash("255,77,109", 0.6);
+      addShake(20);
+      burst(x, groundNearY - ROCK_BASE * 0.4, "#cabfb2", 26);
+      pop("いてっ！", "#ff8b9c");
+      updateHud();
+      if (lives <= 0) gameOver();
+    }
+
+    function collect(o, x) {
+      combo++;
+      comboTimer = 1.6;
+      const mult = 1 + Math.min(combo - 1, 5) * 0.2;
+      const pts = Math.round(o.value * mult);
+      score += pts;
+      const color = o.kind === "gem" ? "#7be5ff" : "#ffd166";
+      burst(x, groundNearY - GEM_BASE * 0.6, color, o.kind === "gem" ? 26 : 16);
+      let label = "+" + pts;
+      if (combo >= 2) label += "  " + combo + "連";
+      pop(label, color);
+      addShake(o.kind === "gem" ? 8 : 4);
+      updateHud();
+    }
+
+    // ====== エフェクト ======
+    function burst(x, y, color, n = 16) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 120 + Math.random() * 320;
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 120,
+          life: 0.5 + Math.random() * 0.4, age: 0, color, size: 4 + Math.random() * 8,
+        });
+      }
+    }
+    function flash(rgb, a) { flashColor = rgb; flashAlpha = a; }
+    function pop(label, color, ms = 650) {
+      popEl.textContent = label;
+      popEl.style.color = color || "var(--gold)";
+      popEl.style.opacity = "1";
+      popEl.style.transform = "translateX(-50%) scale(1)";
+      clearTimeout(pop._t);
+      pop._t = setTimeout(() => {
+        popEl.style.opacity = "0";
+        popEl.style.transform = "translateX(-50%) scale(.6)";
+      }, ms);
+    }
+
+    function gameOver() {
+      state = "over";
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        '<h1>GAME OVER</h1><p>STAGE ' + (stageIdx + 1) + '/3 でリタイア / SCORE</p><div class="big">' + Math.floor(score) +
+        '</div><button class="btn" id="again">もう一度</button>';
+      overlay.querySelector("#again").addEventListener("click", restart);
+    }
+
+    function gameWin() {
+      state = "over";
+      overlay.classList.remove("hidden");
+      overlay.innerHTML =
+        '<h1>CLEAR!</h1><p>🎉 全3ステージ制覇！ / SCORE</p><div class="big">' + Math.floor(score) +
+        '</div><button class="btn" id="again">もう一度</button>';
+      overlay.querySelector("#again").addEventListener("click", restart);
+    }
+
+    function restart() {
+      resetGame();
+      overlay.classList.add("hidden");
+      state = "playing";
+      lastTime = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    // ====== メインループ ======
+    function loop(now) {
+      if (state !== "playing") return;
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+      elapsed += dt;
+
+      const lm = detectPose(now);
+      updatePlayers(lm);
+      for (const pl of players) pl.x += (pl.targetX - pl.x) * SMOOTH;
+
+      // 生存ボーナス
+      score += dt * 4;
+
+      // スポーン（時間＋ステージで難化）
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawn();
+        spawnTimer = Math.max(0.40 - stageIdx * 0.04, 1.10 - elapsed * 0.009);
+      }
+
+      // 物体を手前へ + 衝突
+      for (const o of objects) { o.z -= o.zSpeed * dt; o.rot += o.vr * dt; o.bob += dt * 4; }
+      for (let i = objects.length - 1; i >= 0; i--) {
+        const o = objects[i];
+        if (!o.resolved && o.z <= 0) resolve(o);
+        if (o.z <= 0) objects.splice(i, 1);
+      }
+
+      // パーティクル
+      for (const p of particles) { p.age += dt; p.vy += 900 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
+      particles = particles.filter((p) => p.age < p.life);
+
+      if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 0; }
+      if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt * 1.5);
+      if (shake.t > 0) shake.t -= dt;
+
+      // ステージ進行 / クリア（点数で進み、最後のステージの goal でクリア）
+      if (score >= currentStage().goal) {
+        if (stageIdx < STAGES.length - 1) advanceStage(stageIdx + 1);
+        else { gameWin(); return; }
+      }
+      updateHud();
+
+      render(lm);
+      requestAnimationFrame(loop);
+    }
+
+    function advanceStage(idx) {
+      stageIdx = idx;
+      const st = currentStage();
+      objects = [];          // 新ステージは一掃して仕切り直し
+      spawnTimer = 1.0;
+      combo = 0;
+      flash(st.road, 0.5);
+      addShake(10);
+      pop("STAGE " + (idx + 1) + " 　" + st.name, "rgb(" + st.road + ")", 1600);
+      applyStageTheme();
+      updateHud();
+    }
+
+    // ====== 描画 ======
+    function render(lm) {
+      ctx.save();
+      if (shake.t > 0) {
+        const k = (shake.t / 0.26) * shake.mag;
+        ctx.translate((Math.random() - 0.5) * k, (Math.random() - 0.5) * k);
+      }
+
+      // 背景にミラーしたカメラ映像 + ベール
+      if (video.readyState >= 2) {
+        ctx.save();
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      } else {
+        // カメラ未準備時のフォールバック背景
+        const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        g.addColorStop(0, "#202a4a"); g.addColorStop(1, "#0b0d1a");
+        ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      const st = currentStage();
+      ctx.fillStyle = "rgba(" + st.tint + "," + st.veil + ")";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      drawRoad();
+
+      // 各人の骨格を薄く（トラッキングのフィードバック）
+      if (lm) for (const one of lm) drawSkeleton(one);
+
+      // 物体を奥行き順（z 大きい＝奥 から先に）
+      const sorted = objects.slice().sort((a, b) => b.z - a.z);
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      for (const o of sorted) drawObject(o);
+
+      // パーティクル
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // 各プレイヤーのガイド線とアバター（手前・最前面）
+      for (let i = 0; i < players.length; i++) drawPlayerGuide(players[i], i);
+      for (let i = 0; i < players.length; i++) drawAvatar(players[i], i);
+
+      ctx.restore(); // shake
+
+      // 被弾フラッシュ
+      if (flashAlpha > 0) {
+        ctx.fillStyle = `rgba(${flashColor},${flashAlpha})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      // 体が映っていない時の注意
+      if (!bodyVisible && state === "playing") {
+        ctx.save();
+        ctx.globalAlpha = 0.5 + 0.3 * Math.sin(elapsed * 6);
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.font = "700 " + (canvas.height * 0.035 | 0) + "px sans-serif";
+        ctx.fillText("全身がカメラに映る位置へ", canvas.width / 2, canvas.height * 0.5);
+        ctx.restore();
+      }
+    }
+
+    // ---- 擬似3Dの道路 ----
+    function drawRoad() {
+      const baseY = groundNearY + canvas.height * 0.08;
+      const halfBase = roadHalfNear * 1.12;
+      // 路面（消失点 → 手前の台形）
+      ctx.save();
+      const grd = ctx.createLinearGradient(0, VP.y, 0, baseY);
+      grd.addColorStop(0, "rgba(20,26,48,0.10)");
+      grd.addColorStop(1, "rgba(14,18,38,0.55)");
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.moveTo(VP.x - 2, VP.y);
+      ctx.lineTo(VP.x + 2, VP.y);
+      ctx.lineTo(VP.x + halfBase, baseY);
+      ctx.lineTo(VP.x - halfBase, baseY);
+      ctx.closePath();
+      ctx.fill();
+
+      // 横方向の桟（手前へスクロールして奥行き・速度感を出す）
+      const N = 14;
+      const scroll = (elapsed * 0.45) % 1;
+      for (let i = 0; i < N; i++) {
+        const z = ((i / N + 1) - scroll) % 1; // 0..1（時間で手前へスクロール）
+        const sc = NEAR / (NEAR + z * DEPTH);
+        const y = VP.y + (groundNearY - VP.y) * sc;
+        const hw = roadHalfNear * sc;
+        ctx.globalAlpha = 0.18 * sc + 0.04;
+        ctx.strokeStyle = "#9fb3ff";
+        ctx.lineWidth = Math.max(1, 3 * sc);
+        ctx.beginPath();
+        ctx.moveTo(VP.x - hw, y);
+        ctx.lineTo(VP.x + hw, y);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      // 道路の左右エッジ（ステージ色）
+      ctx.strokeStyle = "rgba(" + currentStage().road + ",0.4)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(VP.x, VP.y); ctx.lineTo(VP.x - halfBase, baseY);
+      ctx.moveTo(VP.x, VP.y); ctx.lineTo(VP.x + halfBase, baseY);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawObject(o) {
+      const p = project(o.ax, groundNearY, o.z); // 接地点
+      const base = (o.kind === "rock" ? ROCK_BASE : GEM_BASE) * p.scale;
+      // 接地影
+      ctx.save();
+      ctx.globalAlpha = 0.32 * p.scale;
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, base * 0.5, base * 0.16, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      if (o.kind === "rock") {
+        // 岩は接地して転がる
+        ctx.translate(p.x, p.y - base * 0.5);
+        ctx.rotate(o.rot * 0.25);
+        ctx.font = base + "px serif";
+        ctx.fillText(o.emoji, 0, 0);
+      } else {
+        // 宝は少し浮いて回転・上下動
+        const lift = base * 0.7 + Math.sin(o.bob) * base * 0.08;
+        ctx.translate(p.x, p.y - lift);
+        ctx.shadowColor = o.kind === "gem" ? "rgba(123,229,255,0.8)" : "rgba(255,209,102,0.8)";
+        ctx.shadowBlur = 22 * p.scale;
+        ctx.font = base + "px serif";
+        ctx.fillText(o.emoji, 0, 0);
+      }
+      ctx.restore();
+    }
+
+    function drawPlayerGuide(pl, idx) {
+      const x = pl.x;
+      const top = Math.min(pl.bodyY, groundNearY - 10);
+      const c = PLAYER_COLORS[idx % PLAYER_COLORS.length];
+      ctx.save();
+      const grd = ctx.createLinearGradient(0, top, 0, groundNearY);
+      grd.addColorStop(0, hexToRgba(c.top, 0.05));
+      grd.addColorStop(1, hexToRgba(c.top, 0.45));
+      ctx.strokeStyle = grd;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 12]);
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, groundNearY);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawAvatar(pl, idx) {
+      const x = pl.x;
+      const y = groundNearY;
+      const c = PLAYER_COLORS[idx % PLAYER_COLORS.length];
+      // 近くに迫った岩がこのプレイヤーの位置にあるか（キャッチゾーンの色変え）
+      let danger = false;
+      for (const o of objects) {
+        if (o.kind !== "rock" || o.z > 0.34) continue;
+        if (Math.abs(o.ax - x) < catchHalf + ROCK_BASE * 0.34) { danger = true; break; }
+      }
+      const zoneRgb = danger ? "255,77,109" : hexToRgb(c.top);
+
+      // キャッチゾーン（足元のリング）
+      ctx.save();
+      ctx.globalAlpha = 0.5 + 0.2 * Math.sin(elapsed * 6);
+      ctx.strokeStyle = `rgba(${zoneRgb},0.9)`;
+      ctx.lineWidth = 4;
+      ctx.shadowColor = `rgba(${zoneRgb},0.9)`;
+      ctx.shadowBlur = 18;
+      ctx.beginPath();
+      ctx.ellipse(x, y, catchHalf, catchHalf * 0.34, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // 接地影
+      ctx.save();
+      ctx.globalAlpha = 0.35; ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.ellipse(x, y, catchHalf * 0.7, catchHalf * 0.22, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // ヒーロー（簡易キャラ）
+      const h = canvas.height * 0.17;
+      const bodyW = h * 0.32;
+      const headR = h * 0.16;
+      const topY = y - h;
+      ctx.save();
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      // 胴
+      const bg = ctx.createLinearGradient(0, topY, 0, y);
+      bg.addColorStop(0, c.top); bg.addColorStop(1, c.bot);
+      ctx.fillStyle = bg;
+      ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 3;
+      roundRect(x - bodyW / 2, topY + headR * 1.2, bodyW, h - headR * 1.4, bodyW * 0.4);
+      ctx.fill(); ctx.stroke();
+      // 腕
+      ctx.strokeStyle = c.arm; ctx.lineWidth = h * 0.1;
+      ctx.beginPath();
+      ctx.moveTo(x - bodyW / 2, topY + h * 0.42);
+      ctx.lineTo(x - bodyW * 0.95, topY + h * 0.30);
+      ctx.moveTo(x + bodyW / 2, topY + h * 0.42);
+      ctx.lineTo(x + bodyW * 0.95, topY + h * 0.30);
+      ctx.stroke();
+      // 頭
+      ctx.fillStyle = "#ffe0b8";
+      ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(x, topY + headR, headR, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      // 目
+      ctx.fillStyle = "#1a1a2a";
+      ctx.beginPath(); ctx.arc(x - headR * 0.35, topY + headR, headR * 0.16, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + headR * 0.35, topY + headR, headR * 0.16, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    // "#rrggbb" → "r,g,b"
+    function hexToRgb(hex) {
+      const n = parseInt(hex.slice(1), 16);
+      return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+    }
+    function hexToRgba(hex, a) { return `rgba(${hexToRgb(hex)},${a})`; }
+
+    // 骨格（薄く）
+    const POSE_CONNECTIONS = [
+      [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+      [11, 23], [12, 24], [23, 24],
+      [23, 25], [25, 27], [24, 26], [26, 28],
+    ];
+    function drawSkeleton(lm) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 4; ctx.lineCap = "round";
+      ctx.beginPath();
+      for (const [a, b] of POSE_CONNECTIONS) {
+        const pa = lm[a], pb = lm[b];
+        if ((pa?.visibility ?? 0) < 0.3 || (pb?.visibility ?? 0) < 0.3) continue;
+        ctx.moveTo(canvas.width - pa.x * canvas.width, pa.y * canvas.height);
+        ctx.lineTo(canvas.width - pb.x * canvas.width, pb.y * canvas.height);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+  </script>
+</body>
+</html>
