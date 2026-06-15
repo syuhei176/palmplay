@@ -197,13 +197,14 @@
     // レール上のビート列。長屋街→門前で開門→門をくぐり中庭→鬼の大将
     const BEATS = [
       { type:"travel",    toZ:7,   dur:5.0, cue:"亡者の長屋街へ…" },
-      { type:"encounter", anchorZ:7,   spawnDist:16, ashigaru:4, bee:2, kunai:1, gap:0.95, speed:2.3, cue:"長屋より亡者ぞ！斬れ" },
+      { type:"encounter", anchorZ:7,   spawnDist:16, ashigaru:3, bee:2, side:2, kunai:1, gap:0.95, speed:2.3, cue:"長屋より亡者ぞ！斬れ" },
       { type:"travel",    toZ:-7,  dur:5.0, cue:"街の奥へ" },
-      { type:"encounter", anchorZ:-7,  spawnDist:16, ashigaru:6, bee:3, kunai:3, gap:0.82, speed:2.6, cue:"井戸の陰より伏兵！" },
+      { type:"encounter", anchorZ:-7,  spawnDist:16, ashigaru:4, bee:3, side:3, kunai:3, gap:0.82, speed:2.6, cue:"物陰から横合いに——伏兵！" },
       { type:"travel",    toZ:GATE_FRONT,   dur:5.0, cue:"突き当りの大門——" },
       { type:"travel",    toZ:GATE_FRONT,   dur:2.4, gate:1, cue:"門を開ける…" },
       { type:"travel",    toZ:COURT_ANCHOR, dur:5.0, cue:"門をくぐり、中庭へ" },
-      { type:"boss",      anchorZ:COURT_ANCHOR, cue:"中庭に、鬼の大将ぞ——" },
+      { type:"encounter", anchorZ:COURT_ANCHOR, spawnDist:14, ashigaru:1, bee:1, side:4, kunai:0, gap:0.6, speed:2.9, cue:"中庭の物陰より、左右一斉！" },
+      { type:"boss",      anchorZ:COURT_ANCHOR, cue:"そして——中庭に鬼の大将！" },
     ];
     const AREA_NAME = "其ノ一 ・ 亡者の長屋街";
 
@@ -608,17 +609,30 @@
     }
 
     // ===================== 敵スポーン =====================
-    function spawnAshigaru() {
+    // opts.side = -1/1 で「建物・塀の陰から横合いに飛び込む」奇襲スポーン
+    function spawnAshigaru(opts={}) {
       const e = instantiateHumanoid("ashigaru");
-      const x = (Math.random()-0.5)*5.0;
-      const z0 = gPlayerZ - gSpawnDist + Math.random()*3;
+      const side = opts.side || 0;
+      let x, z0, tx, tz, spd;
+      if (side) {
+        x = side * 6.2;                          // 建物際（画面の左右端）
+        z0 = gPlayerZ - (5 + Math.random()*5);   // プレイヤー寄り＝唐突に現れる
+        tx = (Math.random()-0.5)*2.6;            // 中央へ斬り込む
+        tz = gMeleeZ;
+        spd = gSpeed * 1.7;                       // 速い＝奇襲
+      } else {
+        x = (Math.random()-0.5)*5.0;
+        z0 = gPlayerZ - gSpawnDist + Math.random()*3;
+        tx = x; tz = gMeleeZ;
+        spd = gSpeed * (0.85 + Math.random()*0.3);
+      }
       e.group.position.set(x, 0, z0);
       three.scene.add(e.group);
       Object.assign(e, {
-        type:"ashigaru", x, z:z0, speed:gSpeed*(0.85+Math.random()*0.3),
+        type:"ashigaru", x, z:z0, tx, tz, side, speed:spd,
         hp:ASHI_HP, maxHp:ASHI_HP, cur:null, state:"walk", stateT:0, dead:false, dieAge:0,
         attackT:0, struck:false, hitCd:0, hitFlash:0,
-        meleeZ:gMeleeZ, gaitClip: Math.random()<0.4 ? "run" : "walk",
+        gaitClip: side ? "run" : (Math.random()<0.4 ? "run" : "walk"),
         headY:1.5*ASSETS.ashigaru.scale, feetY:0.06, torsoY:1.0*ASSETS.ashigaru.scale,
       });
       play(e, e.gaitClip);
@@ -788,8 +802,17 @@
     function updateAshigaru(e, dt) {
       if (e.state === "walk") {
         play(e, e.gaitClip);
-        e.z += e.speed * dt;
-        if (e.z >= e.meleeZ) { e.z = e.meleeZ; startAshiAttack(e); }
+        // 目標地点(tx,tz)へ寄る。正面湧きは直進、横奇襲は斜めに突っ込む
+        const dx = e.tx - e.x, dz = e.tz - e.z, d = Math.hypot(dx, dz);
+        const step = e.speed * dt;
+        if (d <= step + 0.06) {
+          e.x = e.tx; e.z = e.tz;
+          e.group.rotation.y = Math.atan2(-e.x, Math.max(0.1, gPlayerZ - e.z)); // プレイヤーを向く
+          startAshiAttack(e);
+        } else {
+          e.x += dx/d*step; e.z += dz/d*step;
+          e.group.rotation.y = Math.atan2(dx, dz);                              // 進行方向を向く
+        }
       } else if (e.state === "attack") {
         e.stateT -= dt;
         if (!e.struck && e.stateT <= e.atkDur*0.45) {
@@ -1018,7 +1041,7 @@
         camZ = beat.anchorZ;
         gPlayerZ = beat.anchorZ; gMeleeZ = beat.anchorZ - MELEE_GAP;
         gSpawnDist = beat.spawnDist; gSpeed = beat.speed;
-        beat.toAshi = beat.ashigaru; beat.toBee = beat.bee; beat.toKunai = beat.kunai || 0;
+        beat.toAshi = beat.ashigaru; beat.toBee = beat.bee; beat.toKunai = beat.kunai || 0; beat.toSide = beat.side || 0;
         beat.spawnT = 0.5; beat.throwT = 1.2; spawnOn = true;
         setCue("alert", beat.cue); SFX.waveStart();
         waveEl.textContent = "迎撃 " + encounterNo() + " / " + encounterTotal();
@@ -1041,14 +1064,15 @@
       } else if (beat.type === "encounter") {
         const e = beat;
         e.spawnT -= dt;
-        if (e.spawnT <= 0 && (e.toAshi > 0 || e.toBee > 0)) {
-          if (e.toBee > 0 && (e.toAshi === 0 || Math.random() < 0.3)) { spawnBee(); e.toBee--; }
-          else if (e.toAshi > 0) { spawnAshigaru(); e.toAshi--; }
-          e.spawnT = e.gap;
+        if (e.spawnT <= 0) {
+          if (e.toSide > 0 && (Math.random() < 0.45 || (e.toAshi === 0 && e.toBee === 0))) {
+            spawnAshigaru({ side: Math.random() < 0.5 ? -1 : 1 }); e.toSide--; e.spawnT = e.gap * 0.75; // 横奇襲は畳みかける
+          } else if (e.toBee > 0 && (e.toAshi === 0 || Math.random() < 0.35)) { spawnBee(); e.toBee--; e.spawnT = e.gap; }
+          else if (e.toAshi > 0) { spawnAshigaru(); e.toAshi--; e.spawnT = e.gap; }
         }
         if (e.toKunai > 0) { e.throwT -= dt; if (e.throwT <= 0) { spawnThrownKunai(); e.toKunai--; e.throwT = 1.4 + Math.random(); } }
         const alive = enemies.some((en) => en.type !== "boss" && !en.dead);
-        if (e.toAshi <= 0 && e.toBee <= 0 && !alive && !PREVIEW) nextBeat();
+        if (e.toAshi <= 0 && e.toBee <= 0 && e.toSide <= 0 && !alive && !PREVIEW) nextBeat();
         runHealTimer(dt);
       } else if (beat.type === "boss") {
         if (!beat.spawned) { beat.spawnT -= dt; if (beat.spawnT <= 0 && !PREVIEW) { spawnBoss(); beat.spawned = true; } }
@@ -1304,6 +1328,7 @@
         window.__view = (z) => { camZ = z; beat = null; updateCamera(); };
         window.__gate = (v) => { gateTarget = v; };
         window.__boss = () => { gPlayerZ = BOSS_ANCHOR; gMeleeZ = BOSS_ANCHOR - MELEE_GAP; camZ = BOSS_ANCHOR; beat = { type:"boss" }; gateTarget = 1; spawnBoss(); };
+        window.__enc = (z=7) => { gPlayerZ = z; gMeleeZ = z - MELEE_GAP; gSpawnDist = 16; gSpeed = 2.5; camZ = z; beat = { type:"encounter" }; updateCamera(); spawnAshigaru(); spawnAshigaru({ side:-1 }); spawnAshigaru({ side:1 }); };
         overlay.classList.add("hidden");
         state = "playing"; lastTime = performance.now(); requestAnimationFrame(loop);
         return;
